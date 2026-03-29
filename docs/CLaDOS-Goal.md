@@ -16,6 +16,8 @@ Most "AI coding" tools generate code and hope for the best. CLaDOS works the way
 - Phase handoffs are file-based, and cross-file code context is shared via rigorous **AST/LSP programmatic extraction** (interfaces, exports) rather than lossy LLM text summaries
 - **[Future]** An Interactive Mode lets users iterate and fix code interactively with the AI in the context of the generated workspace — a separate product surface that ships after the core pipeline is proven
 
+The ultimate proof of success would be if this could be used to make itself.
+
 ---
 
 ## Scope: v1 core vs. future

@@ -36,6 +36,32 @@ This is the buildable spec for CLaDOS v1. Everything in this document ships. Any
 
 ---
 
+## Startup and invocation
+
+CLaDOS is invoked as a Node.js CLI via `npx`:
+
+```
+npx clados new my-project     # creates {cwd}/my-project/.clados/, starts pipeline
+npx clados resume my-project  # resumes a stopped/crashed project
+```
+
+`clados new {name}` does the following:
+1. Creates the project directory `{name}/` under the current working directory
+2. Initializes `.clados/` with a fresh `00-session-state.json` (`pipeline_status: "idle"`)
+3. Starts the Express server on a random available port (probes 3100–3199; first free port wins)
+4. Opens the system default browser at `http://localhost:{port}`
+5. Presents the Phase 0 setup screen
+
+`clados resume {name}` reads the existing `00-session-state.json`, starts the server, opens the browser, and restores state per the crash recovery rules.
+
+**The UI is served by the orchestrator's Express server** — a single process hosts both the REST/WebSocket API and the static SPA build (from `ui/dist/`). There is no separate Vite dev server in production usage. During development of CLaDOS itself, contributors run the Vite dev server (port 5173) with a proxy to the orchestrator — this is a contributor concern, not user-facing. There is no `clados dev` command.
+
+**No global install required.** `npx` resolves the package on first use. A global install (`npm install -g clados`) works identically. The entry point is `bin/clados.js` declared in `package.json`.
+
+**Server lifecycle:** The Express server stays alive until the user closes the terminal or presses Ctrl+C. On `SIGINT`, the orchestrator writes `pipeline_status` to session state (preserving `gate_pending` or `agent_running` for resume) and exits cleanly. If an agent is mid-stream, the partial artifact in `.clados/wip/` is left intact for crash recovery.
+
+---
+
 ## Phases and gates
 
 The Conductor drives agents through a fixed 5-phase sequence. Each phase ends with a human approval gate. Phase transitions are expressed directly in TypeScript — no graph, no DSL.
@@ -100,7 +126,23 @@ This is not source code — asymmetric context is preserved. The Conductor valid
 
 **Validation pipeline (runs after implementation):**
 1. **Contract Validator** (automated, not LLM) — parses the OpenAPI spec and scans generated source code for route registrations. Checks two things: (a) every endpoint in the OpenAPI spec has a matching route registration with the correct HTTP method, and (b) every route registration in the source code has a corresponding OpenAPI entry. It does **not** verify request/response shapes — that's covered by the test suite and by requiring the Engineer to include `express-openapi-validator` middleware (enforced via the Engineer's system prompt Constraints section). Route-shape mismatches surface as test failures, not contract findings. Produces `02-build/contract-validator.json`.
-2. **QA Agent** (Asymmetric Context) — reads the PRD, OpenAPI spec, and `02-build/test-context.json`. Writes black-box integration tests (Playwright/Supertest). Has no access to source code, schema, or internal implementation.
+
+   **Route scanning scope:** The Contract Validator resolves Express router composition to a limited depth. It handles:
+   - Top-level `app.get/post/put/patch/delete("/path", ...)` calls
+   - One level of `app.use("/prefix", router)` composition — it follows the `router` import, reads that file, extracts `router.get/post/...` calls, and prepends the prefix
+   - `Router()` instances exported from files imported by the main entry point
+
+   It does **not** handle:
+   - Dynamic route loading (e.g., `fs.readdirSync` + `require`)
+   - Routes registered via middleware factories or higher-order functions
+   - Deeply nested router chains (3+ levels)
+
+   This keeps the Contract Validator at ~80 lines of deterministic AST traversal (using the TypeScript compiler API, not regex). False negatives from dynamic routing are acceptable — those routes still get exercised by the test suite. If the validator cannot resolve a `Router()` import, it emits a `should_fix` finding: *"Could not trace router import at {file}:{line} — verify this route is covered by the OpenAPI spec."* The Engineer's system prompt Constraints section instructs it to prefer flat, explicit route registration over dynamic loading.
+2. **QA Agent** (Asymmetric Context) — reads the PRD, OpenAPI spec, and `02-build/test-context.json`. Has no access to source code, schema, or internal implementation. Test framework is determined by project type:
+   - **Backend-only / library / CLI tool:** QA writes Supertest tests (`tests/integration/*.test.ts`). These are HTTP-level tests — request/response assertions against the running server. No browser automation.
+   - **Full-stack:** QA writes Playwright tests (`tests/e2e/*.spec.ts`). These are browser-level tests that exercise the frontend UI and its integration with the backend API.
+
+   The project type is read from `00-session-state.json` and injected into the QA agent's system prompt as a variable. The QA system prompt has two Task sections (one per framework) and a conditional: *"Use the Supertest section if project_type is backend-only, library, or cli-tool. Use the Playwright section if project_type is full-stack."* Both frameworks are `devDependencies` in the generated project's `package.json` — the QA agent emits the dependency list in its output, and the Test Runner runs `npm install` before execution.
 3. **Test Runner** (automated) — executes QA's tests. Produces `02-build/test-runner.json`.
 
 **Test Runner environment setup:**
@@ -151,8 +193,8 @@ Each agent is defined in `agent-registry.json` with:
 {
   "role": "pm",
   "system_prompt": "agents/pm.md",
-  "default_model": "claude-sonnet",
-  "escalation_model": "claude-opus",
+  "default_model": "claude-sonnet-4-20250514",
+  "escalation_model": "claude-opus-4-20250514",
   "tools": ["read_file", "write_file", "list_files"],
   "enabled_when": "always",
   "context_artifacts": [
@@ -163,6 +205,33 @@ Each agent is defined in `agent-registry.json` with:
   "expected_tool_turns": 1
 }
 ```
+
+**Model identifiers:** All `default_model` and `escalation_model` values use exact Anthropic API model IDs. The v1 defaults:
+
+| Nickname | API model ID |
+|----------|-------------|
+| Sonnet | `claude-sonnet-4-20250514` |
+| Opus | `claude-opus-4-20250514` |
+| Haiku (summarizer only) | `claude-haiku-3-5-20241022` |
+
+These are hardcoded defaults in `agent-registry.json`. When Anthropic releases newer model versions, update the IDs in the registry — no code changes required.
+
+**`enabled_when` — v1 mechanism:**
+The full condition DSL is out of scope for v1. In v1, `enabled_when` accepts exactly three string values:
+- `"always"` — agent runs in every project (PM, Architect, Engineer, QA, Validator, DevOps, Docs)
+- `"config.security"` — agent runs only if the user toggled Security on at the setup screen
+- `"config.wrecker"` — agent runs only if the user toggled Wrecker on at the setup screen
+
+The Conductor evaluates this with a direct lookup — no expression parser:
+```typescript
+function isAgentEnabled(enabledWhen: string, config: SessionConfig): boolean {
+  if (enabledWhen === "always") return true;
+  if (enabledWhen === "config.security") return config.security_enabled;
+  if (enabledWhen === "config.wrecker") return config.wrecker_enabled;
+  throw new Error(`Unknown enabled_when value: ${enabledWhen}`);
+}
+```
+The `SessionConfig` fields `security_enabled` and `wrecker_enabled` are set from the Phase 0 setup screen toggles and written to `00-session-state.json`. Adding a new optional agent in a future version requires adding a new `enabled_when` string and a matching config field — the pattern is intentionally rigid to avoid premature abstraction.
 
 `system_prompt_tokens` is calculated once at startup via `anthropic.beta.messages.countTokens()` and cached. If the API call fails, fallback to `Math.ceil(chars / 3.5)`.
 
@@ -181,8 +250,11 @@ Budget projection for an agent: `(context_tokens + (expected_output_tokens_per_t
 | Wrecker | Sonnet | Opus | read_file, write_file |
 | DevOps | Sonnet | Opus | read_file, write_file |
 | Docs | Sonnet | Opus | read_file, write_file |
+| Summarizer | Haiku | N/A | — |
 
-The Conductor itself always runs as Opus. It is TypeScript code, not a prompted agent — it only calls Claude for specialist agent dispatch and the `conductor.reason()` escape hatch.
+Display names (Sonnet, Opus, Haiku) map to exact API model IDs listed in the **Model identifiers** table above. The Summarizer is not a full agent — it is a Haiku-tier side-call used only by the context extraction pipeline (see Context Management).
+
+The Conductor itself always runs as Opus (`claude-opus-4-20250514`). It is TypeScript code, not a prompted agent — it only calls Claude for specialist agent dispatch and the `conductor.reason()` escape hatch.
 
 **Agent system prompt structure (required):**
 ```
@@ -281,9 +353,17 @@ Severity levels: `must_fix`, `should_fix`, `suggestion`.
   "completed_agents": ["backend-engineer", "qa"],
   "in_progress_agent": "security",
   "in_progress_artifact_partial": ".clados/wip/02-security-report.partial.md",
-  "spec_version_at_start": 2
+  "spec_version_at_start": 2,
+  "gate_revision_count": 1,
+  "unresolved_streak": 0
 }
 ```
+
+**Revision tracking:**
+- `gate_revision_count` — incremented each time the human selects "Ask AI to revise" at the current phase's gate. Resets to 0 when the phase advances (gate approved). This is the counter displayed in the gate header as *"Revision 2 of 3 before Opus escalation"* and drives the amber (2) / red (3+) color thresholds.
+- `unresolved_streak` — incremented each time a revision cycle completes and the Validator still reports the same `must_fix` findings (compared by finding `id`). Resets to 0 when a previously-unresolved finding is marked `resolved`. This is the counter that triggers `conductor.reason()` at 3.
+
+Both counters are per-phase (scoped to `phase_checkpoint`) and survive crashes — they are written to session state atomically along with all other checkpoint fields. On phase rollback ("Go back to Gate N"), the target phase's counters reset to 0.
 
 **Crash recovery (on startup with `pipeline_status: "agent_running"`):**
 1. Read `phase_checkpoint.in_progress_artifact_partial`
@@ -338,7 +418,7 @@ Use `anthropic.beta.messages.countTokens()` for exact counts (called once per ar
 **Two-Tier AST/LSP extraction:**
 1. **LSP parsing** — extract precise signatures, exports, and public methods from generated code
 2. **Tree-sitter fallback** — if LSP fails (common with temporarily broken syntax), Tree-sitter provides partial-error-tolerant parsing
-3. **Semantic Context Mapping** — a cheap side-model (Haiku) emits one-line summaries per file (e.g., `src/payment.ts: Exports processPayment. Handles Stripe formatting.`), paired with AST structure to give downstream agents both types and intent. Haiku summarizer calls are tracked in `phase_checkpoint.agent_tokens_used` under a `summarizer` entry and included in the running cost total and per-phase breakdown.
+3. **Semantic Context Mapping** — a cheap side-model (Haiku — `claude-haiku-3-5-20241022`) emits one-line summaries per file (e.g., `src/payment.ts: Exports processPayment. Handles Stripe formatting.`), paired with AST structure to give downstream agents both types and intent. Haiku summarizer calls are tracked in `phase_checkpoint.agent_tokens_used` under a `summarizer` entry and included in the running cost total and per-phase breakdown.
 
 **Summarizer budget cap:** Summarizer calls are capped at 5% of the remaining budget. If the next summarizer call would push cumulative summarizer spend past this threshold, the Conductor skips the semantic summary and falls back to AST-only context (structural exports without intent descriptions) for the remainder of the phase. The cap prevents silent cost accumulation on large projects with many revision cycles. The threshold is checked per-call, not batched — a single summarizer call never exceeds a few cents, so the 5% cap triggers gradually.
 
@@ -355,9 +435,32 @@ Each batch in Pass 2 receives full file content for files declared as direct dep
 
 ---
 
-## Parallel build and contract drift
+## Phase 2 agent execution order and parallelism
 
-For full-stack projects, frontend and backend Engineers run in parallel with the OpenAPI spec as a shared contract.
+**Single-project-type execution (backend-only, CLI tool, library):**
+
+Phase 2 agents execute in three stages with a shared semaphore (`parallel.ts`, default 3 slots):
+
+| Stage | Agents | Concurrency |
+|-------|--------|-------------|
+| **A — Implementation** | Engineer | Sequential (single agent) |
+| **B — Validation** | Contract Validator, QA → Test Runner, Security (if enabled) | Parallel — Contract Validator and Security run concurrently with the QA → Test Runner sequential pair |
+| **C — Review** | Wrecker (if enabled), then Validator | Sequential — Wrecker runs first (writes adversarial tests, appends to test suite, Test Runner re-runs for Wrecker's tests only), then Validator reviews all results |
+
+**Stage dependencies:**
+- Stage B starts after Stage A completes (all agents need the implementation)
+- QA → Test Runner is a sequential pair within Stage B (Test Runner needs QA's tests)
+- Contract Validator runs in parallel with QA (no shared dependency)
+- Security runs in parallel with QA and Contract Validator (reads source code independently)
+- Stage C starts after all Stage B agents complete
+- Wrecker depends on Test Runner results to identify failure gaps — it cannot run in parallel with QA/Test Runner
+- Validator is always the last agent in Phase 2 — it needs all prior outputs
+
+**If Wrecker is enabled:** Wrecker writes adversarial tests to `tests/adversarial/*.test.ts`. The Test Runner re-executes with only the Wrecker test files (not the full QA suite again). Wrecker test results are merged into the existing `02-build/test-runner.json` under a separate `wrecker_tests` key.
+
+**Full-stack parallel build:**
+
+For full-stack projects, frontend and backend Engineers run in parallel with the OpenAPI spec as a shared contract. The Stage B/C pipeline runs once after both Engineers complete — not separately per Engineer.
 
 A `spec_version` integer in session state increments whenever `01-api-spec.yaml` is modified. When either Engineer's output is revised, the Conductor compares the spec version the other Engineer ran against to the current version. If they differ, the Contract Validator re-runs and the Validator does a targeted integration review — not a full re-run.
 
@@ -506,13 +609,30 @@ The orchestrator runs as a persistent Express server.
 - `POST /budget/update` — raise spend cap: `{ new_cap: number }`
 
 **WebSocket events (server → client):**
-- `agent:start` — agent card transitions to Running
-- `agent:stream` — current section marker (not raw tokens)
-- `agent:done` — agent finished, artifact path
-- `agent:error` — agent failed after retries
-- `gate:open` — gate is ready for human decision
-- `budget:gate` — spend cap would be breached
-- `state:snapshot` — full state (sent on reconnection)
+
+| Event | Payload | Notes |
+|-------|---------|-------|
+| `agent:start` | `{ phase: number, agent: string, model: string }` | `agent` is the role name (e.g. `"qa"`), `model` is the API model ID being used for this dispatch |
+| `agent:stream` | `{ phase: number, agent: string, section: string }` | `section` is the current structural heading the agent is writing (e.g. `"Non-functional requirements"`), extracted from `## ` markers in the streaming output. Sent each time a new heading is detected — not on every token. |
+| `agent:done` | `{ phase: number, agent: string, artifact: string, tokens_used: { input: number, output: number }, cost_usd: number }` | `artifact` is the relative path within `.clados/` (e.g. `"01-prd.md"`). `cost_usd` is the actual cost of this agent dispatch. |
+| `agent:error` | `{ phase: number, agent: string, error_type: string, message: string, retry_count: number, is_skippable: boolean }` | `error_type` is one of `"api_429"`, `"api_5xx"`, `"context_length"`, `"timeout"`, `"parse_error"`. `is_skippable` is `true` only for Wrecker, Security, and Docs. |
+| `gate:open` | `{ phase: number, gate_number: number, artifacts: string[], findings: Finding[], revision_count: number, next_phase_cost_estimate: string }` | `artifacts` is the list of artifact paths for this gate. `findings` is the full Validator findings array. `revision_count` is the current value of `gate_revision_count`. `next_phase_cost_estimate` is a pre-formatted string (e.g. `"~$0.45"`). |
+| `budget:gate` | `{ current_spend_usd: number, remaining_budget_usd: number, blocked_agent: string, projected_cost_usd: number }` | Sent when the next dispatch would breach the spend cap. |
+| `state:snapshot` | Full `00-session-state.json` content (the entire JSON object) | Sent on WebSocket reconnection. The UI replaces its entire local state with this snapshot. |
+
+`Finding` shape (used in `gate:open`):
+```json
+{
+  "id": "f-001",
+  "severity": "must_fix",
+  "category": "security",
+  "description": "No authentication mechanism specified.",
+  "file": "01-prd.md",
+  "line": 45,
+  "status": "new"
+}
+```
+`status` is one of `"new"`, `"resolved"`, `"partially_resolved"`, `"unresolved"`, `"new_discovery"` (present only on re-review).
 
 ---
 

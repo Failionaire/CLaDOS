@@ -1,0 +1,146 @@
+{
+  "agents": [
+    {
+      "role": "pm",
+      "system_prompt": "agents/pm.md",
+      "default_model": "claude-sonnet-4-20250514",
+      "escalation_model": "claude-opus-4-20250514",
+      "tools": ["read_file", "write_file"],
+      "enabled_when": "always",
+      "context_artifacts": [
+        { "artifact": "00-concept.md",        "type": "reference" },
+        { "artifact": "00-validator.json",     "type": "reference" },
+        { "artifact": "01-prd.md",             "type": "reference" },
+        { "artifact": "01-architecture.md",    "type": "reference" },
+        { "artifact": "01-api-spec.yaml",      "type": "reference" }
+      ],
+      "system_prompt_tokens": null,
+      "expected_output_tokens_per_turn": 4000,
+      "expected_tool_turns": 1
+    },
+    {
+      "role": "architect",
+      "system_prompt": "agents/architect.md",
+      "default_model": "claude-sonnet-4-20250514",
+      "escalation_model": "claude-opus-4-20250514",
+      "tools": ["read_file", "write_file"],
+      "enabled_when": "always",
+      "context_artifacts": [
+        { "artifact": "00-concept.md",     "type": "reference" },
+        { "artifact": "01-prd.md",         "type": "required"  }
+      ],
+      "system_prompt_tokens": null,
+      "expected_output_tokens_per_turn": 5000,
+      "expected_tool_turns": 2
+    },
+    {
+      "role": "engineer",
+      "system_prompt": "agents/engineer.md",
+      "default_model": "claude-sonnet-4-20250514",
+      "escalation_model": "claude-opus-4-20250514",
+      "tools": ["read_file", "write_file", "list_files"],
+      "enabled_when": "always",
+      "context_artifacts": [
+        { "artifact": "01-prd.md",          "type": "required"  },
+        { "artifact": "01-architecture.md", "type": "required"  },
+        { "artifact": "01-api-spec.yaml",   "type": "required"  },
+        { "artifact": "01-schema.yaml",     "type": "required"  }
+      ],
+      "system_prompt_tokens": null,
+      "expected_output_tokens_per_turn": 6000,
+      "expected_tool_turns": 5
+    },
+    {
+      "role": "qa",
+      "system_prompt": "agents/qa.md",
+      "default_model": "claude-sonnet-4-20250514",
+      "escalation_model": "claude-opus-4-20250514",
+      "tools": ["read_file", "write_file"],
+      "enabled_when": "always",
+      "context_artifacts": [
+        { "artifact": "01-prd.md",                    "type": "required" },
+        { "artifact": "01-api-spec.yaml",             "type": "required" },
+        { "artifact": "02-build/test-context.json",   "type": "required" }
+      ],
+      "system_prompt_tokens": null,
+      "expected_output_tokens_per_turn": 5000,
+      "expected_tool_turns": 2
+    },
+    {
+      "role": "validator",
+      "system_prompt": "agents/validator.md",
+      "default_model": "claude-sonnet-4-20250514",
+      "escalation_model": "claude-opus-4-20250514",
+      "tools": ["read_file"],
+      "enabled_when": "always",
+      "context_artifacts": [],
+      "system_prompt_tokens": null,
+      "expected_output_tokens_per_turn": 3000,
+      "expected_tool_turns": 1
+    },
+    {
+      "role": "security",
+      "system_prompt": "agents/security.md",
+      "default_model": "claude-sonnet-4-20250514",
+      "escalation_model": "claude-opus-4-20250514",
+      "tools": ["read_file"],
+      "enabled_when": "config.security",
+      "context_artifacts": [
+        { "artifact": "01-architecture.md", "type": "reference" },
+        { "artifact": "01-api-spec.yaml",   "type": "reference" }
+      ],
+      "system_prompt_tokens": null,
+      "expected_output_tokens_per_turn": 4000,
+      "expected_tool_turns": 1
+    },
+    {
+      "role": "wrecker",
+      "system_prompt": "agents/wrecker.md",
+      "default_model": "claude-sonnet-4-20250514",
+      "escalation_model": "claude-opus-4-20250514",
+      "tools": ["read_file", "write_file"],
+      "enabled_when": "config.wrecker",
+      "context_artifacts": [
+        { "artifact": "01-prd.md",                  "type": "reference" },
+        { "artifact": "01-api-spec.yaml",           "type": "reference" },
+        { "artifact": "02-build/test-runner.json",  "type": "required"  }
+      ],
+      "system_prompt_tokens": null,
+      "expected_output_tokens_per_turn": 4000,
+      "expected_tool_turns": 2
+    },
+    {
+      "role": "devops",
+      "system_prompt": "agents/devops.md",
+      "default_model": "claude-sonnet-4-20250514",
+      "escalation_model": "claude-opus-4-20250514",
+      "tools": ["read_file", "write_file"],
+      "enabled_when": "always",
+      "context_artifacts": [
+        { "artifact": "01-architecture.md", "type": "reference" },
+        { "artifact": "03-prd.md",          "type": "reference" },
+        { "artifact": "03-api-spec.yaml",   "type": "reference" }
+      ],
+      "system_prompt_tokens": null,
+      "expected_output_tokens_per_turn": 4000,
+      "expected_tool_turns": 2
+    },
+    {
+      "role": "docs",
+      "system_prompt": "agents/docs.md",
+      "default_model": "claude-sonnet-4-20250514",
+      "escalation_model": "claude-opus-4-20250514",
+      "tools": ["read_file", "write_file"],
+      "enabled_when": "always",
+      "context_artifacts": [
+        { "artifact": "01-prd.md",          "type": "reference" },
+        { "artifact": "01-api-spec.yaml",   "type": "reference" },
+        { "artifact": "02-build/test-runner.json", "type": "reference" }
+      ],
+      "system_prompt_tokens": null,
+      "expected_output_tokens_per_turn": 4000,
+      "expected_tool_turns": 2
+    }
+  ],
+  "rate_limit_tpm": 80000
+}

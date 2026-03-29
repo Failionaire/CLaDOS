@@ -8,6 +8,12 @@ A multi-agent software development system built on the Claude API. You describe 
 
 ---
 
+## WARNING
+
+This is very much WIP, please don't actually use it yet.
+
+---
+
 ## What it is
 
 Most "AI coding" tools generate code and hope for the best. CLaDOS works the way a real engineering team does — prioritizing agile prototyping, rapid iteration, and code-as-truth workflows:
