@@ -1,0 +1,1393 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>CLaDOS — task-manager-api</title>
+  <style>
+    :root {
+      --bg:           #0d0f1a;
+      --surface:      #141728;
+      --surface2:     #1c2035;
+      --border:       #252a42;
+      --border-dim:   #1c2035;
+      --text:         #e2e8f0;
+      --text-muted:   #64748b;
+      --text-dim:     #2e3450;
+      --green:        #22c55e;
+      --green-bg:     rgba(34,197,94,0.08);
+      --blue:         #3b82f6;
+      --blue-bg:      rgba(59,130,246,0.08);
+      --amber:        #f59e0b;
+      --amber-bg:     rgba(245,158,11,0.08);
+      --red:          #ef4444;
+      --red-bg:       rgba(239,68,68,0.08);
+      --purple:       #a855f7;
+      --col-w:        288px;
+    }
+
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      height: 100vh;
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+    }
+
+    /* ─── RECONNECTION BANNER ─────────────────────────────────────── */
+    .reconnect-banner {
+      display: none;
+      align-items: center;
+      justify-content: center;
+      gap: 10px;
+      padding: 7px 20px;
+      font-size: 12px;
+      font-weight: 500;
+      flex-shrink: 0;
+      z-index: 90;
+    }
+    .reconnect-banner.connecting {
+      display: flex;
+      background: rgba(245,158,11,0.1);
+      border-bottom: 1px solid rgba(245,158,11,0.3);
+      color: var(--amber);
+    }
+    .reconnect-banner.failed {
+      display: flex;
+      background: rgba(245,158,11,0.08);
+      border-bottom: 1px solid rgba(245,158,11,0.25);
+      color: var(--amber);
+    }
+    .reconnect-banner.success {
+      display: flex;
+      background: rgba(34,197,94,0.08);
+      border-bottom: 1px solid rgba(34,197,94,0.25);
+      color: var(--green);
+      animation: banner-fade 3s forwards;
+    }
+    @keyframes banner-fade { 0%,70% { opacity: 1; } 100% { opacity: 0; display: none; } }
+
+    .reconnect-dot {
+      width: 6px; height: 6px; border-radius: 50%;
+      background: currentColor; flex-shrink: 0;
+      animation: pulse-opacity 1.2s ease-in-out infinite;
+    }
+
+    /* ─── EST TOTAL CHIP ──────────────────────────────────────────── */
+    .est-total-chip {
+      font-size: 12px; font-weight: 600;
+      color: #86efac;
+      background: rgba(34,197,94,0.08);
+      border: 1px solid rgba(34,197,94,0.3);
+      padding: 4px 10px; border-radius: 5px;
+      cursor: default; position: relative;
+    }
+    .est-total-chip:hover .est-tooltip { display: block; }
+    .est-tooltip {
+      display: none;
+      position: absolute; bottom: calc(100% + 8px); right: 0;
+      background: var(--surface2); border: 1px solid var(--border);
+      border-radius: 7px; padding: 12px 14px; min-width: 220px;
+      font-size: 11px; color: var(--text-muted); line-height: 1.6;
+      box-shadow: 0 8px 24px rgba(0,0,0,0.4); z-index: 200;
+      font-weight: 400; white-space: nowrap;
+    }
+    .est-tooltip-row {
+      display: flex; justify-content: space-between; gap: 20px;
+    }
+    .est-tooltip-note {
+      margin-top: 8px; padding-top: 8px;
+      border-top: 1px solid var(--border);
+      font-size: 10px; color: var(--text-dim); white-space: normal;
+    }
+
+    /* ─── BUDGET GATE BAND ────────────────────────────────────────── */
+    .budget-band {
+      display: none;
+      flex-direction: column;
+      border-bottom: 1px solid rgba(245,158,11,0.35);
+      background: rgba(245,158,11,0.05);
+      flex-shrink: 0;
+    }
+    .budget-band.open { display: flex; }
+    .budget-band-head {
+      display: flex; align-items: center; justify-content: space-between;
+      padding: 9px 20px; cursor: pointer;
+      user-select: none;
+    }
+    .budget-band-title {
+      font-size: 13px; font-weight: 700; color: var(--amber);
+      display: flex; align-items: center; gap: 8px;
+    }
+    .budget-band-actions {
+      display: flex; gap: 8px; align-items: center;
+    }
+    .budget-band-body {
+      display: none;
+      grid-template-columns: 1fr 1fr;
+      border-top: 1px solid rgba(245,158,11,0.2);
+      max-height: 38vh;
+      overflow-y: auto;
+    }
+    .budget-band-body.expanded { display: grid; }
+    .budget-pane {
+      padding: 14px 20px; overflow-y: auto;
+    }
+    .budget-pane + .budget-pane { border-left: 1px solid var(--border); }
+    .budget-row {
+      display: flex; justify-content: space-between; align-items: baseline;
+      font-size: 12px; padding: 5px 0;
+      border-bottom: 1px solid var(--border-dim);
+    }
+    .budget-row:last-child { border-bottom: none; }
+    .budget-label { color: var(--text-muted); }
+    .budget-val { font-weight: 600; }
+    .budget-val.breach { color: var(--red); }
+    .budget-val.ok    { color: var(--green); }
+    .budget-cap-row {
+      display: flex; align-items: center; gap: 10px;
+      margin-top: 12px;
+    }
+    .budget-cap-label { font-size: 12px; color: var(--text-muted); }
+    .budget-cap-input {
+      background: var(--surface2); border: 1px solid var(--border);
+      border-radius: 5px; color: var(--text); font-family: inherit;
+      font-size: 13px; padding: 5px 9px; outline: none; width: 100px;
+    }
+    .budget-cap-input:focus { border-color: var(--blue); }
+    .budget-band-actions-row {
+      display: flex; gap: 8px; margin-top: 12px;
+    }
+    .btn-budget-continue {
+      background: var(--green); color: #000; border: none;
+      border-radius: 6px; padding: 7px 16px;
+      font-size: 12px; font-weight: 700; cursor: pointer; font-family: inherit;
+    }
+    .btn-budget-stop {
+      background: rgba(120,20,20,0.35); border: 1px solid #7f1d1d;
+      color: #fca5a5; border-radius: 6px; padding: 7px 14px;
+      font-size: 12px; font-weight: 600; cursor: pointer; font-family: inherit;
+    }
+    .budget-note {
+      margin-top: 10px; padding: 8px 10px;
+      background: var(--surface2); border: 1px solid var(--border);
+      border-radius: 5px; font-size: 11px; color: var(--text-muted); line-height: 1.5;
+    }
+
+    /* ─── TOP BAR ─────────────────────────────────────────────────── */
+    .topbar {
+      display: flex;
+      align-items: center;
+      gap: 14px;
+      padding: 0 20px;
+      height: 50px;
+      background: var(--surface);
+      border-bottom: 1px solid var(--border);
+      flex-shrink: 0;
+      z-index: 100;
+    }
+    .logo {
+      font-size: 13px;
+      font-weight: 800;
+      letter-spacing: 0.12em;
+      color: var(--blue);
+      text-transform: uppercase;
+    }
+    .sep { color: var(--border); font-size: 18px; }
+    .project-name { font-size: 14px; font-weight: 600; }
+    .phase-chip {
+      font-size: 11px; font-weight: 700;
+      padding: 3px 9px; border-radius: 4px;
+      background: var(--blue-bg); border: 1px solid var(--blue); color: var(--blue);
+    }
+    .phase-label { font-size: 13px; color: var(--text-muted); }
+
+    .topbar-right {
+      margin-left: auto;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+    .status-indicator {
+      display: flex; align-items: center; gap: 8px;
+      font-size: 13px; color: var(--amber);
+    }
+    .pulse-dot {
+      width: 8px; height: 8px; border-radius: 50%;
+      background: var(--amber); flex-shrink: 0;
+      animation: pulse-opacity 2s ease-in-out infinite;
+    }
+    .decisions-btn {
+      font-size: 11px; font-weight: 600;
+      padding: 4px 10px; border-radius: 5px;
+      background: var(--surface2); border: 1px solid var(--border);
+      color: var(--text-muted); cursor: pointer;
+      transition: color 0.15s, border-color 0.15s;
+      font-family: inherit;
+    }
+    .decisions-btn:hover { color: var(--text); border-color: var(--blue); }
+    .focus-btn {
+      font-size: 11px; font-weight: 600;
+      padding: 4px 10px; border-radius: 5px;
+      background: var(--surface2); border: 1px solid var(--border);
+      color: var(--text-muted); cursor: pointer;
+      transition: color 0.15s; font-family: inherit;
+    }
+    .focus-btn:hover { color: var(--text); }
+    .cost-chip {
+      font-size: 12px; color: var(--text-muted);
+      background: var(--surface2); border: 1px solid var(--border);
+      padding: 4px 10px; border-radius: 5px;
+    }
+
+    /* ─── DECISIONS OVERLAY ───────────────────────────────────────── */
+    .decisions-overlay {
+      display: none;
+      position: fixed; inset: 0; z-index: 200;
+      background: rgba(0,0,0,0.5);
+    }
+    .decisions-overlay.open { display: block; }
+    .decisions-panel {
+      position: absolute; right: 0; top: 0; bottom: 0;
+      width: 400px; background: var(--surface);
+      border-left: 1px solid var(--border);
+      display: flex; flex-direction: column;
+    }
+    .decisions-head {
+      padding: 16px 20px;
+      border-bottom: 1px solid var(--border);
+      display: flex; align-items: center; justify-content: space-between;
+    }
+    .decisions-head-title { font-size: 14px; font-weight: 700; }
+    .decisions-close {
+      background: none; border: none; color: var(--text-muted);
+      font-size: 18px; cursor: pointer; line-height: 1;
+      font-family: inherit;
+    }
+    .decisions-close:hover { color: var(--text); }
+    .decisions-body { flex: 1; overflow-y: auto; padding: 12px 16px; }
+    .decision-entry {
+      padding: 10px 12px; border-radius: 6px;
+      background: var(--surface2); border: 1px solid var(--border);
+      margin-bottom: 8px; font-size: 12px;
+    }
+    .decision-meta {
+      display: flex; gap: 8px; align-items: center;
+      margin-bottom: 5px;
+    }
+    .decision-phase {
+      font-size: 10px; font-weight: 700;
+      background: var(--blue-bg); border: 1px solid rgba(59,130,246,0.3);
+      color: var(--blue); padding: 1px 6px; border-radius: 3px;
+    }
+    .decision-agent { font-size: 10px; color: var(--text-muted); }
+    .decision-time { font-size: 10px; color: var(--text-dim); margin-left: auto; }
+    .decision-text { color: var(--text); line-height: 1.45; }
+    .decision-result {
+      margin-top: 5px; font-size: 11px; color: var(--amber);
+      padding: 4px 8px; background: var(--amber-bg);
+      border-radius: 3px; display: inline-block;
+    }
+
+    /* ─── BOARD ───────────────────────────────────────────────────── */
+    .board {
+      flex: 1; overflow-x: auto; overflow-y: hidden;
+      padding: 18px 20px; display: flex; gap: 14px; min-height: 180px;
+    }
+    .col {
+      width: var(--col-w); flex-shrink: 0;
+      display: flex; flex-direction: column; gap: 8px;
+      min-height: 0; transition: width 0.22s ease;
+    }
+
+    /* column headers */
+    .col-head {
+      display: flex; align-items: center; justify-content: space-between;
+      padding: 9px 13px; border-radius: 7px;
+      font-size: 12px; font-weight: 700; letter-spacing: 0.02em;
+      border: 1px solid var(--border);
+    }
+    .col-head.done    { border-color: var(--green);  background: var(--green-bg);  color: var(--green); }
+    .col-head.active  { border-color: var(--blue);   background: var(--blue-bg);   color: var(--blue);  }
+    .col-head.pending { background: var(--surface);  color: var(--text-muted); }
+
+    .col-badge { font-size: 10px; font-weight: 700; padding: 1px 7px; border-radius: 20px; }
+    .done  .col-badge { background: var(--green); color: #000; }
+    .active .col-badge { background: var(--blue);  color: #fff; }
+    .pending .col-badge { background: var(--text-dim); color: var(--text-muted); }
+
+    /* ─── CARDS ───────────────────────────────────────────────────── */
+    .card {
+      background: var(--surface); border: 1px solid var(--border);
+      border-radius: 7px; padding: 11px 13px; font-size: 13px;
+    }
+    .card.is-done    { border-left: 3px solid var(--green); }
+    .card.is-running { border-left: 3px solid var(--blue); animation: color-cycle 3s ease-in-out infinite; }
+    .card.is-running.retrying { border-left: 3px solid var(--amber); animation: amber-pulse 1.5s ease-in-out infinite; }
+    .card.is-flagged { border-left: 3px solid var(--red); }
+    .card.is-error   { border-left: 3px solid var(--amber); background: rgba(245,158,11,0.04); }
+    .card.is-pending { opacity: 0.38; }
+    .card.is-disabled { opacity: 0.22; border-style: dashed; }
+
+    .card-row {
+      display: flex; align-items: center; justify-content: space-between; margin-bottom: 5px;
+    }
+    .agent-name { font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.05em; }
+    .agent-nickname { font-size: 10px; font-weight: 400; color: var(--text-muted); margin-top: 1px; }
+
+    .badge { font-size: 10px; font-weight: 700; padding: 2px 7px; border-radius: 20px; }
+    .badge-done    { background: var(--green); color: #000; }
+    .badge-running { background: var(--blue);  color: #fff; animation: pulse-opacity 1.2s ease-in-out infinite; }
+    .badge-pending { background: var(--text-dim); color: var(--text-muted); }
+    .badge-flagged { background: var(--red);   color: #fff; }
+    .badge-error   { background: var(--amber); color: #000; }
+    .badge-skip    { background: var(--text-dim); color: var(--text-muted); }
+    .badge-auto    { background: rgba(6,182,212,0.2); color: #22d3ee; border: 1px solid rgba(6,182,212,0.3); }
+
+    .card-desc { font-size: 12px; color: var(--text-muted); line-height: 1.45; }
+
+    .artifact-link {
+      display: inline-flex; align-items: center; gap: 4px;
+      margin-top: 7px; font-size: 11px; color: var(--blue); text-decoration: none;
+    }
+    .artifact-link:hover { text-decoration: underline; }
+    .artifact-link::before { content: '📄'; font-size: 11px; }
+
+    /* card indicators */
+    .card-indicators { display: flex; gap: 5px; flex-wrap: wrap; margin-top: 6px; }
+    .indicator {
+      font-size: 10px; padding: 1px 7px; border-radius: 3px;
+      border: 1px solid var(--border); color: var(--text-muted);
+      background: var(--surface2);
+    }
+    .indicator-compressed { border-color: rgba(245,158,11,0.4); color: var(--amber); background: var(--amber-bg); }
+    .indicator-fetched    { border-color: rgba(59,130,246,0.4);  color: var(--blue);  background: var(--blue-bg); }
+
+    /* error card actions */
+    .card-actions { display: flex; gap: 6px; margin-top: 8px; }
+    .card-action-btn {
+      font-size: 11px; padding: 3px 10px; border-radius: 4px;
+      border: 1px solid var(--border); background: var(--surface2);
+      color: var(--text); cursor: pointer; font-family: inherit;
+      transition: border-color 0.15s;
+    }
+    .card-action-btn:hover { border-color: var(--blue); color: var(--blue); }
+    .card-action-btn.danger:hover { border-color: var(--red); color: var(--red); }
+
+    /* gate card in column */
+    .gate-card {
+      border-radius: 7px; padding: 10px 13px;
+      font-size: 12px; font-weight: 600; text-align: center;
+    }
+    .gate-card.gate-approved { background: var(--green-bg); border: 1px solid var(--green); color: var(--green); }
+    .gate-card.gate-active   { background: var(--amber-bg); border: 1px solid var(--amber); color: var(--amber); cursor: pointer; transition: background 0.15s; }
+    .gate-card.gate-active:hover { background: rgba(245,158,11,0.14); }
+    .gate-card.gate-pending  { border: 1px dashed var(--border-dim); color: var(--text-dim); }
+
+    /* ─── STREAM PREVIEW ────────────────────────────────────────── */
+    .stream-preview {
+      font-size: 11px; color: var(--text-muted);
+      margin-top: 5px; line-height: 1.4;
+    }
+    .stream-section {
+      font-size: 11px; color: var(--blue);
+      font-style: italic;
+    }
+    .stream-cursor {
+      display: inline-block; width: 5px; height: 10px;
+      background: var(--blue); vertical-align: bottom;
+      animation: pulse-opacity 0.8s step-end infinite; margin-left: 1px;
+    }
+
+    /* ─── CHALLENGER SUBORDINATE BLOCK ───────────────────────────── */
+    .agent-group { display: flex; flex-direction: column; }
+    .ch-block { display: flex; padding-left: 20px; margin-top: -4px; }
+    .ch-connector { width: 20px; flex-shrink: 0; position: relative; }
+    .ch-connector::before {
+      content: ''; position: absolute;
+      left: 8px; top: 0; bottom: 50%; border-left: 1px solid var(--border);
+    }
+    .ch-connector::after {
+      content: ''; position: absolute;
+      left: 8px; top: 50%; width: 11px; border-top: 1px solid var(--border);
+    }
+    .ch-verdict {
+      flex: 1; background: var(--surface2); border: 1px solid var(--border);
+      border-radius: 6px; padding: 8px 11px; font-size: 12px;
+    }
+    .ch-verdict.ch-passed  { border-left: 3px solid var(--green); }
+    .ch-verdict.ch-flagged { border-left: 3px solid var(--red); }
+    .ch-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 4px; }
+    .ch-label { font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.06em; color: var(--text-muted); }
+    .ch-summary { font-size: 11px; color: var(--text-muted); line-height: 1.4; }
+
+    /* ─── COLLAPSIBLE COLUMNS ─────────────────────────────────────── */
+    .col-cards {
+      display: flex; flex-direction: column; gap: 8px;
+      flex: 1; min-height: 0; overflow-y: auto; padding-bottom: 8px;
+      max-height: var(--col-cards-max-h, calc(100vh - 400px));
+    }
+    .col-toggle {
+      background: none; border: none; color: currentColor;
+      cursor: pointer; font-size: 13px; padding: 0 1px;
+      line-height: 1; opacity: 0.7; font-family: inherit; flex-shrink: 0;
+    }
+    .col-toggle:hover { opacity: 1; }
+    .col.collapsed { width: 46px; }
+    .col.collapsed .col-cards, .col.collapsed .gate-card { display: none; }
+    .col.collapsed .col-head {
+      height: 148px; position: relative;
+      justify-content: center; align-items: center;
+      padding: 10px 0; cursor: pointer;
+    }
+    .col.collapsed .col-head-text {
+      position: absolute; left: 50%; top: 50%;
+      transform: translateX(-50%) translateY(-50%) rotate(-90deg);
+      white-space: nowrap; font-size: 10px; letter-spacing: 0.04em;
+    }
+    .col.collapsed .col-badge { display: none; }
+    .col.collapsed .col-toggle { position: absolute; bottom: 8px; font-size: 10px; }
+
+    /* auto-collapse done columns on narrow viewports */
+    @media (max-width: 1400px) {
+      .col.auto-collapsible:not(.user-expanded) { width: 46px; }
+      .col.auto-collapsible:not(.user-expanded) .col-cards,
+      .col.auto-collapsible:not(.user-expanded) .gate-card { display: none; }
+      .col.auto-collapsible:not(.user-expanded) .col-head {
+        height: 148px; position: relative; justify-content: center;
+        align-items: center; padding: 10px 0; cursor: pointer;
+      }
+      .col.auto-collapsible:not(.user-expanded) .col-head-text {
+        position: absolute; left: 50%; top: 50%;
+        transform: translateX(-50%) translateY(-50%) rotate(-90deg);
+        white-space: nowrap; font-size: 10px;
+      }
+      .col.auto-collapsible:not(.user-expanded) .col-badge { display: none; }
+      .col.auto-collapsible:not(.user-expanded) .col-toggle { position: absolute; bottom: 8px; font-size: 10px; }
+    }
+
+    /* ─── BUTTON STYLES ───────────────────────────────────────────── */
+    .btn {
+      padding: 7px 16px; border-radius: 6px; border: none;
+      font-size: 13px; font-weight: 600; cursor: pointer;
+      transition: opacity 0.15s, transform 0.1s, box-shadow 0.15s;
+      font-family: inherit;
+    }
+    .btn:hover  { opacity: 0.85; }
+    .btn:active { transform: scale(0.97); }
+    .btn-approve {
+      background: var(--green); color: #000;
+      font-size: 14px; padding: 9px 22px; font-weight: 700;
+    }
+    .btn-approve:hover { opacity: 1; box-shadow: 0 0 0 3px rgba(34,197,94,0.25); }
+    .btn-revise {
+      background: var(--surface2); border: 1px solid var(--border);
+      color: var(--text); font-weight: 500;
+    }
+    .btn-more {
+      background: rgba(120,20,20,0.35); border: 1px solid #7f1d1d;
+      color: #fca5a5; font-size: 12px; font-weight: 600;
+      position: relative;
+    }
+    .btn-more:hover { background: rgba(153,27,27,0.5); opacity: 1; }
+
+    /* ─── DESTRUCTIVE MENU ────────────────────────────────────────── */
+    .more-menu {
+      display: none; position: absolute; bottom: calc(100% + 6px); right: 0;
+      background: var(--surface2); border: 1px solid var(--border);
+      border-radius: 7px; min-width: 200px; overflow: hidden;
+      box-shadow: 0 8px 24px rgba(0,0,0,0.4); z-index: 50;
+    }
+    .more-menu.open { display: block; }
+    .more-menu-item {
+      display: block; width: 100%; padding: 10px 14px;
+      font-size: 12px; font-weight: 500; text-align: left;
+      background: none; border: none; color: #fca5a5;
+      cursor: pointer; font-family: inherit; border-bottom: 1px solid var(--border);
+      transition: background 0.12s;
+    }
+    .more-menu-item:last-child { border-bottom: none; }
+    .more-menu-item:hover { background: rgba(239,68,68,0.1); }
+    .more-menu-item .item-sub { display: block; font-size: 10px; color: var(--text-muted); margin-top: 2px; font-weight: 400; }
+
+    /* ─── CONFIRM BAR ─────────────────────────────────────────────── */
+    .confirm-bar {
+      display: none; align-items: flex-start; gap: 12px; width: 100%;
+      padding: 10px 20px; background: rgba(239,68,68,0.06);
+      border-top: 1px solid rgba(239,68,68,0.2);
+    }
+    .confirm-bar.open { display: flex; }
+    .confirm-text {
+      flex: 1; font-size: 12px; color: var(--text-muted); line-height: 1.5;
+    }
+    .confirm-text code {
+      background: rgba(239,68,68,0.15); padding: 1px 4px;
+      border-radius: 3px; font-size: 11px; color: #fca5a5;
+    }
+    .confirm-select {
+      background: var(--surface2); border: 1px solid var(--border);
+      color: var(--text); padding: 3px 8px; border-radius: 4px;
+      font-family: inherit; font-size: 12px; outline: none; margin-bottom: 4px;
+    }
+    .confirm-btns { display: flex; gap: 8px; align-items: center; flex-shrink: 0; }
+    .btn-cancel-sm {
+      background: none; border: 1px solid var(--border); color: var(--text-muted);
+      font-size: 12px; padding: 6px 14px; border-radius: 6px;
+      cursor: pointer; font-family: inherit; transition: color 0.15s;
+    }
+    .btn-cancel-sm:hover { color: var(--text); }
+    .btn-confirm-yes {
+      background: #991b1b; border: none; color: #fff;
+      font-size: 12px; font-weight: 700; padding: 7px 16px;
+      border-radius: 6px; cursor: pointer; font-family: inherit;
+      transition: opacity 0.15s;
+    }
+    .btn-confirm-yes:hover { opacity: 0.85; }
+
+    /* ─── GATE DRAWER ─────────────────────────────────────────────── */
+    .gate-drawer {
+      height: 280px; flex-shrink: 0;
+      display: flex; flex-direction: column;
+      background: var(--surface);
+    }
+    .drawer-handle {
+      height: 6px; background: transparent;
+      cursor: ns-resize; border-top: 2px solid var(--amber);
+      flex-shrink: 0; transition: background 0.15s;
+    }
+    .drawer-handle:hover { background: rgba(245,158,11,0.08); }
+
+    .drawer-head {
+      display: flex; align-items: center; justify-content: space-between;
+      padding: 10px 20px; border-bottom: 1px solid var(--border);
+      background: var(--surface2); flex-shrink: 0; gap: 16px;
+    }
+    .drawer-title {
+      display: flex; flex-direction: column; gap: 5px;
+      font-size: 14px; font-weight: 700; color: var(--amber); flex: 1; min-width: 0;
+    }
+    .drawer-title-row { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; }
+    .drawer-subtitle { font-size: 12px; font-weight: 400; color: var(--text-muted); }
+    .revision-counter {
+      font-size: 11px; font-weight: 500; color: var(--text-muted);
+      background: var(--surface2); border: 1px solid var(--border);
+      padding: 2px 8px; border-radius: 4px; white-space: nowrap;
+    }
+    .cost-estimate {
+      font-size: 11px; font-weight: 500; color: var(--text-muted);
+      background: var(--green-bg); border: 1px solid rgba(34,197,94,0.25);
+      padding: 2px 8px; border-radius: 4px; white-space: nowrap; color: #86efac;
+    }
+
+    .score-chips { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+    .score-chip {
+      display: flex; align-items: center; gap: 4px;
+      font-size: 11px; padding: 2px 8px; border-radius: 4px;
+      border: 1px solid var(--border); background: var(--surface2); white-space: nowrap;
+    }
+    .score-chip .chip-label { color: var(--text-muted); }
+    .score-chip .chip-val   { font-weight: 700; }
+    .score-chip.pass .chip-val { color: var(--green); }
+    .score-chip.warn .chip-val { color: var(--amber); }
+    .score-chip.fail .chip-val { color: var(--red); }
+
+    .drawer-actions {
+      display: flex; gap: 10px; align-items: center;
+      flex-shrink: 0; position: relative;
+    }
+
+    /* ─── DRAWER BODY ─────────────────────────────────────────────── */
+    .drawer-body {
+      flex: 1; display: grid;
+      grid-template-columns: 1fr 1fr;
+      min-height: 0; transition: grid-template-columns 0.2s;
+    }
+    .drawer-body.revise-mode {
+      grid-template-columns: 2fr 1.5fr 2fr;
+    }
+
+    .pane { padding: 14px 18px; overflow-y: auto; }
+    .pane + .pane { border-left: 1px solid var(--border); }
+    .pane-label {
+      font-size: 10px; font-weight: 700; letter-spacing: 0.07em;
+      text-transform: uppercase; color: var(--text-muted); margin-bottom: 12px;
+    }
+
+    /* ─── REVISE PANEL (middle pane in revise mode) ───────────────── */
+    #revise-pane {
+      display: none; flex-direction: column;
+      gap: 10px; border-left: 1px solid var(--border);
+      grid-column: 2;
+    }
+    #revise-pane.open { display: flex; }
+
+    .revise-context {
+      display: flex; align-items: flex-start; gap: 9px;
+      padding: 9px 12px; background: var(--red-bg);
+      border: 1px solid rgba(239,68,68,0.25); border-radius: 6px;
+      font-size: 12px; color: #fca5a5; line-height: 1.45;
+    }
+    .revise-check {
+      display: flex; align-items: center; gap: 8px;
+      font-size: 12px; color: var(--text-muted);
+    }
+    .revise-check input[type=checkbox] { accent-color: var(--blue); cursor: pointer; }
+    .revise-check label { cursor: pointer; }
+    .revise-textarea {
+      flex: 1; width: 100%; background: var(--surface2);
+      border: 1px solid var(--border); border-radius: 6px;
+      color: var(--text); font-family: inherit; font-size: 13px;
+      padding: 10px 12px; resize: none; outline: none; line-height: 1.5;
+      min-height: 60px;
+    }
+    .revise-textarea:focus { border-color: var(--blue); }
+    .revise-textarea::placeholder { color: var(--text-muted); }
+    .revise-btns { display: flex; align-items: center; justify-content: flex-end; gap: 10px; }
+    .btn-revise-cancel {
+      background: none; border: none; color: var(--text-muted);
+      font-size: 12px; cursor: pointer; font-family: inherit;
+      padding: 6px 10px; border-radius: 5px; transition: color 0.15s;
+    }
+    .btn-revise-cancel:hover { color: var(--text); }
+    .btn-revise-send {
+      background: var(--blue); color: #fff; border: none;
+      border-radius: 6px; padding: 7px 16px;
+      font-size: 12px; font-weight: 600; cursor: pointer; font-family: inherit;
+      transition: opacity 0.15s;
+    }
+    .btn-revise-send:hover { opacity: 0.85; }
+
+    /* ─── ARTIFACT PROSE ──────────────────────────────────────────── */
+    .prose { font-size: 12px; line-height: 1.55; color: var(--text); }
+    .prose h4 { display: block; font-size: 12px; font-weight: 700; margin: 12px 0 5px; }
+    .prose h4:first-child { margin-top: 0; }
+    .prose p  { display: block; color: var(--text-muted); margin-bottom: 7px; }
+    .prose ul { display: block; color: var(--text-muted); padding-left: 15px; margin-bottom: 7px; }
+    .prose li { display: list-item; margin-bottom: 3px; }
+    .tag {
+      display: inline-block; background: var(--blue-bg);
+      border: 1px solid rgba(59,130,246,0.35); color: var(--blue);
+      font-size: 10px; padding: 1px 6px; border-radius: 3px; margin: 0 3px 5px 0;
+    }
+    .tag-row { display: block; margin-bottom: 8px; }
+
+    /* ─── FINDINGS ────────────────────────────────────────────────── */
+    .finding {
+      border-radius: 6px; padding: 9px 11px; margin-bottom: 8px;
+      font-size: 12px; line-height: 1.45; border: 1px solid transparent;
+      display: flex; gap: 9px;
+    }
+    .finding.f-must   { background: var(--red-bg);   border-color: rgba(239,68,68,0.3); }
+    .finding.f-should { background: var(--amber-bg); border-color: rgba(245,158,11,0.3); }
+    .finding.f-note   { background: var(--surface2); border-color: var(--border); }
+    .f-badge {
+      flex-shrink: 0; align-self: flex-start; margin-top: 1px;
+      font-size: 9px; font-weight: 800; padding: 2px 5px; border-radius: 3px;
+      letter-spacing: 0.04em; white-space: nowrap;
+    }
+    .f-must   .f-badge { background: var(--red);   color: #fff; }
+    .f-should .f-badge { background: var(--amber); color: #000; }
+    .f-note   .f-badge { background: var(--text-dim); color: var(--text-muted); }
+    .f-body { flex: 1; }
+    .f-text { color: var(--text); margin-bottom: 4px; }
+    .f-file-link {
+      display: inline-block;
+      font-family: monospace;
+      font-size: 10px;
+      color: var(--blue);
+      background: var(--blue-bg);
+      border: 1px solid rgba(59,130,246,0.35);
+      border-radius: 3px;
+      padding: 1px 4px;
+      margin-bottom: 6px;
+      text-decoration: none;
+    }
+    .f-file-link:hover {
+      text-decoration: underline;
+      background: rgba(59,130,246,0.15);
+    }
+    .f-dims { display: flex; gap: 4px; flex-wrap: wrap; }
+    .f-dim {
+      font-size: 10px; background: var(--surface); border: 1px solid var(--border);
+      color: var(--text-muted); padding: 1px 5px; border-radius: 3px;
+    }
+
+    /* ─── AGENT ICONS ────────────────────────────────────────────── */
+    .agent-icon {
+      display: inline-flex; align-items: center; justify-content: center;
+      width: 20px; height: 20px; border-radius: 4px;
+      font-size: 9px; font-weight: 800; flex-shrink: 0;
+      margin-right: 6px; text-transform: uppercase;
+    }
+    .icon-pm     { background: rgba(59,130,246,0.18);  color: #93c5fd; }
+    .icon-arch   { background: rgba(168,85,247,0.18);  color: #d8b4fe; }
+    .icon-eng    { background: rgba(6,182,212,0.18);   color: #67e8f9; }
+    .icon-qa     { background: rgba(34,197,94,0.18);   color: #86efac; }
+    .icon-sec    { background: rgba(239,68,68,0.18);   color: #fca5a5; }
+    .icon-devops { background: rgba(245,158,11,0.18);  color: #fcd34d; }
+    .icon-docs   { background: rgba(168,85,247,0.18);  color: #d8b4fe; }
+    .icon-ch     { background: rgba(239,68,68,0.12);   color: #f87171; font-size: 12px; }
+    .icon-auto   { background: rgba(6,182,212,0.12);   color: #22d3ee; font-size: 8px; }
+
+    /* ─── ANIMATIONS ──────────────────────────────────────────────── */
+    @keyframes spin          { to { transform: rotate(360deg); } }
+    @keyframes pulse-opacity { 0%,100% { opacity: 1; } 50% { opacity: 0.35; } }
+    @keyframes color-cycle   { 0%,100% { border-left-color: var(--blue); } 40% { border-left-color: var(--purple); } 70% { border-left-color: #22d3ee; } }
+    @keyframes amber-pulse   { 0%,100% { border-left-color: var(--amber); } 50% { border-left-color: rgba(245,158,11,0.3); } }
+
+    /* ─── SCROLLBARS ──────────────────────────────────────────────── */
+    ::-webkit-scrollbar       { width: 5px; height: 5px; }
+    ::-webkit-scrollbar-track { background: transparent; }
+    ::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
+  </style>
+</head>
+<body>
+
+<!-- ═══ RECONNECTION BANNER ══════════════════════════════════════════ -->
+<div class="reconnect-banner" id="reconnect-banner">
+  <span class="reconnect-dot"></span>
+  <span id="reconnect-msg">Connection lost — reconnecting…</span>
+</div>
+
+<!-- ═══ DECISIONS OVERLAY ═══════════════════════════════════════════ -->
+<div class="decisions-overlay" id="decisions-overlay" onclick="closeDecisions(event)">
+  <div class="decisions-panel">
+    <div class="decisions-head">
+      <span class="decisions-head-title">Conductor Decisions</span>
+      <button class="decisions-close" onclick="closeDecisionsPanel()">×</button>
+    </div>
+    <div class="decisions-body">
+      <div class="decision-entry">
+        <div class="decision-meta">
+          <span class="decision-phase">Phase 0</span>
+          <span class="decision-agent">PM Agent · Autonomy mode</span>
+          <span class="decision-time">14 min ago</span>
+        </div>
+        <div class="decision-text">Agent asked: "Should the API support multi-tenancy at the database level or application level?"</div>
+        <span class="decision-result">→ Application-level tenancy assumed; simpler for MVP scope</span>
+      </div>
+      <div class="decision-entry">
+        <div class="decision-meta">
+          <span class="decision-phase">Phase 1</span>
+          <span class="decision-agent">PM Agent · context budget</span>
+          <span class="decision-time">6 min ago</span>
+        </div>
+        <div class="decision-text">Projected context for PM agent exceeded 80K tokens. Downgraded 01-concept.md from required to reference (summary injected).</div>
+        <span class="decision-result">→ Agent subsequently fetched full artifact via read_file</span>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ═══ TOP BAR ════════════════════════════════════════════════════ -->
+<header class="topbar">
+  <span class="logo">CLaDOS</span>
+  <span class="sep">/</span>
+  <span class="project-name">task-manager-api</span>
+  <span class="phase-chip">Phase 1</span>
+  <span class="phase-label">Execution (The Build) Prototype</span>
+  <div class="topbar-right">
+    <div class="status-indicator">
+      <span class="pulse-dot"></span>
+      Waiting for your decision at Gate 2
+    </div>
+    <button class="decisions-btn" onclick="openDecisions()">Decisions ▾</button>
+    <button class="focus-btn" onclick="toggleFocus()">Focus</button>
+    <button class="focus-btn" onclick="openBudgetBand()" title="Demo: budget cap hit">💰 Demo cap</button>
+    <button class="focus-btn" onclick="demoReconnecting()" title="Demo: reconnection">📡 Demo ws</button>
+    <div class="est-total-chip">
+      Est. total: $23+
+      <div class="est-tooltip">
+        <div class="est-tooltip-row"><span>Phase 1 — Execution (The Build) Prototype</span><span style="color:var(--text)">$1.20</span></div>
+        <div class="est-tooltip-row"><span>Phase 2 — Execution (The Build)</span><span style="color:var(--text)">$3.80</span></div>
+        <div class="est-tooltip-row"><span>Phase 3 — Build</span><span style="color:var(--text)">$14.50</span></div>
+        <div class="est-tooltip-row"><span>Phase 4 — Ship</span><span style="color:var(--text)">$3.90</span></div>
+        <div class="est-tooltip-note">Lower bound only. Assumes each agent runs once at Sonnet rates with no revision cycles and no Opus escalation. Actual cost will be higher.</div>
+      </div>
+    </div>
+    <span class="cost-chip">$0.38 used</span>
+  </div>
+</header>
+
+<!-- ═══ KANBAN BOARD ═══════════════════════════════════════════════ -->
+<div class="board" id="board">
+
+  <!-- ── Phase 0: Concept — DONE, auto-collapsible ── -->
+  <div class="col auto-collapsible" id="col-0">
+    <div class="col-head done" onclick="toggleCol('col-0')" style="cursor:pointer;user-select:none">
+      <span class="col-head-text">Phase 0 — Concept</span>
+      <div style="display:flex;align-items:center;gap:6px">
+        <span class="col-badge">Done</span>
+        <button class="col-toggle" onclick="event.stopPropagation();toggleCol('col-0')" title="Expand">»</button>
+      </div>
+    </div>
+    <div class="col-cards">
+      <div class="agent-group">
+        <div class="card is-done">
+          <div class="card-row">
+            <div style="display:flex;align-items:center">
+              <span class="agent-icon icon-pm">PM</span>
+              <div><div class="agent-name">PM Agent</div><div class="agent-nickname">Project Manager Core</div></div>
+            </div>
+            <span class="badge badge-done">Done</span>
+          </div>
+          <div class="card-desc">Sharpened raw idea into a one-page concept document.</div>
+          <div class="card-indicators">
+            <span class="indicator indicator-compressed">Context compressed</span>
+            <span class="indicator indicator-fetched">Fetched 1 full artifact</span>
+          </div>
+          <a class="artifact-link" href="#">01-concept.md</a>
+        </div>
+        <div class="ch-block">
+          <div class="ch-connector"></div>
+          <div class="ch-verdict ch-passed">
+            <div class="ch-head">
+              <span class="ch-label" style="display:flex;align-items:center;gap:5px">
+                <span class="agent-icon icon-ch">⊗</span>Validator
+              </span>
+              <span class="badge badge-done" style="font-size:9px;padding:1px 6px">Passed</span>
+            </div>
+            <div class="ch-summary">0 must-fix &middot; 2 suggestions</div>
+            <a class="artifact-link" href="#">01-challenge.json</a>
+          </div>
+        </div>
+      </div>
+      <div class="gate-card gate-approved">✓ Gate 1 — Approved</div>
+    </div>
+  </div>
+
+  <!-- ── Phase 1: Execution (The Build) Prototype — ACTIVE ── -->
+  <div class="col" id="col-1">
+    <div class="col-head active">
+      <span class="col-head-text">Phase 1 — Execution (The Build) Prototype</span>
+      <span class="col-badge">Active</span>
+    </div>
+    <div class="col-cards">
+      <div class="agent-group">
+        <div class="card is-done">
+          <div class="card-row">
+            <div style="display:flex;align-items:center">
+              <span class="agent-icon icon-pm">PM</span>
+              <div><div class="agent-name">PM Agent</div><div class="agent-nickname">Project Manager Core</div></div>
+            </div>
+            <span class="badge badge-done">Done</span>
+          </div>
+          <div class="card-desc">Wrote full PRD with user stories and acceptance criteria.</div>
+          <a class="artifact-link" href="#">02-prd.md (v1) ▾</a>
+        </div>
+        <div class="ch-block">
+          <div class="ch-connector"></div>
+          <div class="ch-verdict ch-flagged">
+            <div class="ch-head">
+              <span class="ch-label" style="display:flex;align-items:center;gap:5px">
+                <span class="agent-icon icon-ch">⊗</span>Validator
+              </span>
+              <span class="badge badge-flagged" style="font-size:9px;padding:1px 6px">2 must-fix</span>
+            </div>
+            <div class="ch-summary">auth (must fix) &middot; rate limiting (must fix) · Score capped at 79</div>
+            <a class="artifact-link" href="#">02-challenge.json</a>
+          </div>
+        </div>
+      </div>
+      <div class="gate-card gate-active">⚡ Gate 2 — Your decision needed ↓</div>
+    </div>
+  </div>
+
+  <!-- ── Phase 2: Execution (The Build) — PENDING ── -->
+  <div class="col" id="col-2">
+    <div class="col-head pending">
+      <span class="col-head-text">Phase 2 — Execution (The Build)</span>
+      <span class="col-badge">Pending</span>
+    </div>
+    <div class="col-cards">
+      <div class="card is-pending">
+        <div class="card-row">
+          <div style="display:flex;align-items:center"><span class="agent-icon icon-arch">AR</span><span class="agent-name">Architect</span></div>
+          <span class="badge badge-pending">Pending</span>
+        </div>
+        <div class="card-desc">Tech stack, ADRs, OpenAPI spec, database schema.</div>
+      </div>
+      <div class="card is-pending">
+        <div class="card-row">
+          <div style="display:flex;align-items:center"><span class="agent-icon icon-ch">⊗</span><span class="agent-name">Validator</span></div>
+          <span class="badge badge-pending">Pending</span>
+        </div>
+        <div class="card-desc">Security, resilience, and cost review — three passes.</div>
+      </div>
+      <div class="gate-card gate-pending">Gate 3</div>
+    </div>
+  </div>
+
+  <!-- ── Phase 3: Build — PENDING ── -->
+  <div class="col" id="col-3">
+    <div class="col-head pending">
+      <span class="col-head-text">Phase 3 — Build</span>
+      <span class="col-badge">Pending</span>
+    </div>
+    <div class="col-cards">
+      <div class="card is-pending">
+        <div class="card-row">
+          <div style="display:flex;align-items:center"><span class="agent-icon icon-eng">BE</span><span class="agent-name">Backend Engineer</span></div>
+          <span class="badge badge-pending">Pending</span>
+        </div>
+        <div class="card-desc">Builds API implementation from OpenAPI spec.</div>
+      </div>
+      <div class="card is-disabled">
+        <div class="card-row">
+          <div style="display:flex;align-items:center"><span class="agent-icon icon-eng" style="opacity:0.4">FE</span><span class="agent-name" style="color:var(--text-dim)">Frontend Engineer</span></div>
+          <span class="badge badge-skip">Skipped</span>
+        </div>
+        <div class="card-desc">Not applicable — backend-only project.</div>
+      </div>
+      <div class="card is-pending">
+        <div class="card-row">
+          <div style="display:flex;align-items:center"><span class="agent-icon icon-qa">QA</span><span class="agent-name">QA Agent</span></div>
+          <span class="badge badge-pending">Pending</span>
+        </div>
+        <div class="card-desc">Writes integration and unit tests.</div>
+      </div>
+      <!-- Contract validator — automated, not LLM -->
+      <div class="card is-pending">
+        <div class="card-row">
+          <div style="display:flex;align-items:center">
+            <span class="agent-icon icon-auto" style="font-size:7px">⚙</span>
+            <span class="agent-name">Contract Validator</span>
+          </div>
+          <span class="badge badge-auto">Automated</span>
+        </div>
+        <div class="card-desc">Static check: implemented routes vs. OpenAPI spec.</div>
+      </div>
+      <!-- Test runner — automated -->
+      <div class="card is-pending">
+        <div class="card-row">
+          <div style="display:flex;align-items:center">
+            <span class="agent-icon icon-auto" style="font-size:7px">⚙</span>
+            <span class="agent-name">Test Runner</span>
+          </div>
+          <span class="badge badge-auto">Automated</span>
+        </div>
+        <div class="card-desc">Executes test suite in sandboxed environment.</div>
+      </div>
+      <div class="card is-pending">
+        <div class="card-row">
+          <div style="display:flex;align-items:center"><span class="agent-icon icon-sec">SEC</span><span class="agent-name">Security Agent</span></div>
+          <span class="badge badge-pending">Pending</span>
+        </div>
+        <div class="card-desc">Threat model and dependency audit.</div>
+      </div>
+      <div class="card is-pending">
+        <div class="card-row">
+          <div style="display:flex;align-items:center"><span class="agent-icon icon-ch">⊗</span><span class="agent-name">Validator</span></div>
+          <span class="badge badge-pending">Pending</span>
+        </div>
+        <div class="card-desc">Reviews code, test results, and contract findings together.</div>
+      </div>
+      <div class="gate-card gate-pending">Gate 4</div>
+    </div>
+  </div>
+
+  <!-- ── Phase 4: Ship & Maintain — PENDING ── -->
+  <div class="col" id="col-4">
+    <div class="col-head pending">
+      <span class="col-head-text">Phase 4 — Ship</span>
+      <span class="col-badge">Pending</span>
+    </div>
+    <div class="col-cards">
+      <div class="card is-pending">
+        <div class="card-row">
+          <div style="display:flex;align-items:center"><span class="agent-icon icon-devops">CD</span><span class="agent-name">DevOps Agent</span></div>
+          <span class="badge badge-pending">Pending</span>
+        </div>
+        <div class="card-desc">CI/CD pipelines, Dockerfiles, environment config.</div>
+      </div>
+      <div class="card is-pending">
+        <div class="card-row">
+          <div style="display:flex;align-items:center"><span class="agent-icon icon-docs">DX</span><span class="agent-name">Docs Agent</span></div>
+          <span class="badge badge-pending">Pending</span>
+        </div>
+        <div class="card-desc">README, changelog, runbook.</div>
+      </div>
+      <div class="gate-card gate-pending">Gate 5</div>
+    </div>
+  </div>
+
+</div><!-- /board -->
+
+<!-- ═══ GATE DRAWER ═════════════════════════════════════════════════ -->
+<div class="gate-drawer" id="gate-drawer">
+  <div class="drawer-handle" id="drawer-handle"></div>
+
+  <div class="drawer-head">
+    <div class="drawer-title">
+      <div class="drawer-title-row">
+        ⚡ Gate 2 — Execution (The Build) Prototype
+        <span class="drawer-subtitle">Review the PRD and Validator findings, then decide</span>
+        <span class="revision-counter">Revision 1 of 3 before Opus escalation</span>
+        <span class="cost-estimate">Next phase: $0.45+</span>
+      </div>
+      <div class="score-chips">
+        <span class="score-chip fail">
+          <span class="chip-label">Validator</span>
+          <span class="chip-val">79/100</span>
+        </span>
+        <span style="font-size:11px;color:var(--red)">Score capped — 2 open must-fix findings</span>
+      </div>
+    </div>
+
+    <div class="drawer-actions" id="action-bar">
+      <!-- Destructive options menu -->
+      <div style="position:relative">
+        <button class="btn btn-more" onclick="toggleMoreMenu()">⚠ More options ▾</button>
+        <div class="more-menu" id="more-menu">
+          <button class="more-menu-item" onclick="openConfirm('goto')">
+            ↩ Go back to Gate N…
+            <span class="item-sub">Discard this phase and re-run from an earlier gate</span>
+          </button>
+          <button class="more-menu-item" onclick="openConfirm('restart')">
+            ↺ Restart this phase
+            <span class="item-sub">Clear in-progress artifacts and re-run Phase 1 from scratch</span>
+          </button>
+          <button class="more-menu-item" onclick="openConfirm('abandon')">
+            ✕ Abandon project
+            <span class="item-sub">Stop pipeline; all artifacts preserved for later</span>
+          </button>
+        </div>
+      </div>
+      <button class="btn btn-revise" onclick="openRevise()">↺ Ask AI to revise</button>
+      <button class="btn btn-approve">Approve →</button>
+    </div>
+  </div>
+
+  <!-- Confirm bar (shown below drawer-head for destructive actions) -->
+  <div class="confirm-bar" id="confirm-bar">
+    <div class="confirm-text" id="confirm-text">
+      <!-- filled by JS -->
+    </div>
+    <div class="confirm-btns">
+      <button class="btn-cancel-sm" onclick="closeConfirm()">Cancel</button>
+      <button class="btn-confirm-yes">Confirm</button>
+    </div>
+  </div>
+
+  <!-- Budget gate band (sits between drawer-head and drawer-body; body stays visible) -->
+  <div class="budget-band" id="budget-band">
+    <div class="budget-band-head" onclick="toggleBudgetBody()">
+      <div class="budget-band-title">
+        ⚠ Spend cap reached — Security Agent would exceed your $5.00 limit
+        <span style="font-size:11px;font-weight:400;color:var(--text-muted)">Pipeline paused before API call · click to expand</span>
+      </div>
+      <div class="budget-band-actions">
+        <button class="btn-budget-continue" onclick="event.stopPropagation();closeBudgetBand()" style="font-size:12px;padding:5px 14px">Raise cap and continue →</button>
+        <button class="btn-budget-stop" onclick="event.stopPropagation()" style="font-size:12px;padding:5px 12px">Stop here</button>
+      </div>
+    </div>
+    <div class="budget-band-body" id="budget-band-body">
+      <div class="budget-pane">
+        <div class="pane-label">💰 Spend breakdown</div>
+        <div class="budget-row">
+          <span class="budget-label">Spent so far</span>
+          <span class="budget-val ok">$4.21</span>
+        </div>
+        <div class="budget-row">
+          <span class="budget-label">Security Agent (projected)</span>
+          <span class="budget-val breach">+$1.14</span>
+        </div>
+        <div class="budget-row">
+          <span class="budget-label">Total if continued</span>
+          <span class="budget-val breach">$5.35 — over cap by $0.35</span>
+        </div>
+        <div class="budget-cap-row">
+          <span class="budget-cap-label">Raise cap to:</span>
+          <input class="budget-cap-input" type="text" value="$10.00">
+        </div>
+        <div class="budget-band-actions-row">
+          <button class="btn-budget-continue" onclick="closeBudgetBand()">Raise cap and continue →</button>
+          <button class="btn-budget-stop">Stop here</button>
+        </div>
+      </div>
+      <div class="budget-pane">
+        <div class="pane-label">⚙ Disable optional agents to stay under cap</div>
+        <div style="display:flex;flex-direction:column;gap:10px;margin-top:4px">
+          <label style="display:flex;align-items:center;gap:10px;font-size:12px;cursor:pointer">
+            <input type="checkbox" checked style="accent-color:var(--blue)">
+            <div>
+              <div style="font-weight:600">Security Agent</div>
+              <div style="font-size:10px;color:var(--text-muted)">Saves ~$1.14 · currently enabled in loadout</div>
+            </div>
+          </label>
+          <label style="display:flex;align-items:center;gap:10px;font-size:12px;cursor:pointer;opacity:0.45">
+            <input type="checkbox" disabled>
+            <div>
+              <div style="font-weight:600">Wrecker · Refiner</div>
+              <div style="font-size:10px;color:var(--text-muted)">Already disabled in loadout</div>
+            </div>
+          </label>
+        </div>
+        <div class="budget-note">
+          Disabling Security Agent would bring projected total to <strong style="color:var(--green)">$4.21</strong>, under your $5.00 cap. The Validator will still review build output, but without a dedicated threat model pass.
+        </div>
+        <div class="budget-note" style="margin-top:6px;border-color:rgba(59,130,246,0.2)">
+          💡 The current artifact and Validator findings are still visible below — scroll down to review them before deciding.
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Drawer body: always visible, even when budget band is open -->
+  <!-- Drawer body: normally 2 panes, revise mode adds center pane -->
+  <div class="drawer-body" id="drawer-body">
+
+    <!-- Left pane: artifact -->
+    <div class="pane" id="artifact-pane">
+      <div class="pane-label">📄 02-prd.md — Product Execution (The Build) Prototype Document <span style="color:var(--blue);cursor:pointer">(v1) ▾</span></div>
+      <div class="prose">
+        <h4>Overview</h4>
+        <p>A REST API for managing tasks across teams. Users can create projects, invite colleagues, assign tasks, set due dates, and get notified of changes. Deployable as a standalone service behind an existing API gateway.</p>
+        <div class="tag-row">
+          <span class="tag">backend-only</span>
+          <span class="tag">REST</span>
+          <span class="tag">PostgreSQL</span>
+        </div>
+        <h4>User Stories</h4>
+        <ul>
+          <li>As a user, I can register and log in to manage my tasks.</li>
+          <li>As a user, I can create, update, and delete tasks within a project.</li>
+          <li>As a team lead, I can assign tasks to other users and set due dates.</li>
+          <li>As a user, I can filter tasks by status, assignee, and due date.</li>
+          <li>As a user, I receive a notification when a task is assigned to me.</li>
+        </ul>
+        <h4>Must Not Do</h4>
+        <ul>
+          <li>Store or process payment information.</li>
+          <li>Expose any user data outside their organisation boundary.</li>
+        </ul>
+        <h4>Acceptance Criteria</h4>
+        <ul>
+          <li>All endpoints respond under 200 ms at p95.</li>
+          <li>All data is scoped to the authenticated user's organisation.</li>
+          <li>API is documented with OpenAPI 3.1.</li>
+        </ul>
+      </div>
+    </div>
+
+    <!-- Center pane: revision input (only in revise mode) -->
+    <div class="pane" id="revise-pane">
+      <div class="pane-label">↺ Revision direction</div>
+      <div class="revise-context">
+        <span>🔎</span>
+        <span>Validator flagged <strong>2 must-fix issues</strong> (auth, rate limiting). These will be sent to the PM agent automatically unless you uncheck below.</span>
+      </div>
+      <div class="revise-check">
+        <input type="checkbox" id="include-findings" checked>
+        <label for="include-findings">Include Validator findings in revision prompt</label>
+      </div>
+      <textarea class="revise-textarea" placeholder="Add direction for the PM agent… (optional)&#10;&#10;e.g. Use JWT with refresh tokens. Add rate limiting to non-functional requirements — 100 req/min per user."></textarea>
+      <div class="revise-btns">
+        <button class="btn-revise-cancel" onclick="closeRevise()">Cancel</button>
+        <button class="btn-revise-send">Send to PM Agent →</button>
+      </div>
+    </div>
+
+    <!-- Right pane: findings (always visible) -->
+    <div class="pane" id="findings-pane">
+      <div class="pane-label">🔎 Validator — 02-challenge.json</div>
+
+      <div class="finding f-must">
+        <span class="f-badge">MUST FIX</span>
+        <div class="f-body">
+          <div class="f-text">No authentication mechanism specified. PRD mentions login but does not define the auth protocol (JWT, OAuth, sessions) or token lifecycle.</div>
+          <a href="vscode://file/{project_root}/.clados/02-prd.md:45" class="f-file-link">02-prd.md:45</a>
+          <div class="f-dims"><span class="f-dim">security</span><span class="f-dim">completeness</span></div>
+        </div>
+      </div>
+
+      <div class="finding f-must">
+        <span class="f-badge">MUST FIX</span>
+        <div class="f-body">
+          <div class="f-text">Rate limiting is absent. A public task API with no rate limits is trivially abusable by credential stuffing or bulk scraping.</div>
+          <a href="vscode://file/{project_root}/.clados/03-infrastructure.yaml:12" class="f-file-link">03-infrastructure.yaml:12</a>
+          <div class="f-dims"><span class="f-dim">security</span><span class="f-dim">resilience</span></div>
+        </div>
+      </div>
+
+      <div class="finding f-should">
+        <span class="f-badge">SHOULD FIX</span>
+        <div class="f-body">
+          <div class="f-text">Pagination not specified for list endpoints. "Filter tasks" implies potentially large result sets with no mention of cursor or page-based pagination.</div>
+          <div class="f-dims"><span class="f-dim">completeness</span></div>
+        </div>
+      </div>
+
+      <div class="finding f-note">
+        <span class="f-badge">SUGGESTION</span>
+        <div class="f-body">
+          <div class="f-text">Consider soft delete for tasks. Hard delete makes audit trails and undo impossible; most task tools users expect to undo deletions.</div>
+          <div class="f-dims"><span class="f-dim">feasibility</span></div>
+        </div>
+      </div>
+    </div>
+
+  </div><!-- /drawer-body -->
+</div><!-- /gate-drawer -->
+
+<script>
+  // ── Drawer resize ────────────────────────────────────────────────
+  (function() {
+    const handle = document.getElementById('drawer-handle');
+    const drawer = document.getElementById('gate-drawer');
+    if (!handle || !drawer) return;
+    let startY, startH;
+    handle.addEventListener('mousedown', e => {
+      startY = e.clientY; startH = drawer.offsetHeight;
+      document.addEventListener('mousemove', onMove);
+      document.addEventListener('mouseup', onUp);
+      e.preventDefault();
+    });
+    function onMove(e) {
+      drawer.style.height = Math.max(200, startH - (e.clientY - startY)) + 'px';
+      updateColHeight();
+    }
+    function onUp() {
+      localStorage.setItem('clados-drawerH', drawer.style.height);
+      document.removeEventListener('mousemove', onMove);
+      document.removeEventListener('mouseup', onUp);
+    }
+    const saved = localStorage.getItem('clados-drawerH');
+    if (saved) { drawer.style.height = saved; }
+  })();
+
+  // ── Column max-height ────────────────────────────────────────────
+  function updateColHeight() {
+    const topH = document.querySelector('.topbar').offsetHeight;
+    const drawerH = document.getElementById('gate-drawer').offsetHeight;
+    const max = Math.max(80, window.innerHeight - topH - drawerH - 90);
+    document.documentElement.style.setProperty('--col-cards-max-h', max + 'px');
+  }
+  new ResizeObserver(updateColHeight).observe(document.getElementById('gate-drawer'));
+  window.addEventListener('resize', updateColHeight);
+  updateColHeight();
+
+  // ── Column collapse ──────────────────────────────────────────────
+  function toggleCol(id) {
+    const col = document.getElementById(id);
+    const willCollapse = !col.classList.contains('collapsed');
+    col.classList.toggle('collapsed');
+    if (!willCollapse) col.classList.add('user-expanded');
+    else col.classList.remove('user-expanded');
+    const btn = col.querySelector('.col-toggle');
+    if (btn) btn.textContent = willCollapse ? '»' : '«';
+  }
+
+  // ── Focus mode ───────────────────────────────────────────────────
+  let focusActive = false;
+  function toggleFocus() {
+    focusActive = !focusActive;
+    document.querySelectorAll('.col').forEach(col => {
+      if (focusActive && col.id !== 'col-1') {
+        col.classList.add('collapsed');
+        const btn = col.querySelector('.col-toggle');
+        if (btn) btn.textContent = '»';
+      } else if (!focusActive) {
+        // restore to auto-collapse state
+        col.classList.remove('collapsed');
+      }
+    });
+    document.querySelector('.focus-btn').style.color = focusActive ? 'var(--blue)' : '';
+  }
+
+  // ── Decisions panel ──────────────────────────────────────────────
+  function openDecisions() {
+    document.getElementById('decisions-overlay').classList.add('open');
+  }
+  function closeDecisions(e) {
+    if (e.target === document.getElementById('decisions-overlay')) closeDecisionsPanel();
+  }
+  function closeDecisionsPanel() {
+    document.getElementById('decisions-overlay').classList.remove('open');
+  }
+
+  // ── More options menu ────────────────────────────────────────────
+  function toggleMoreMenu() {
+    document.getElementById('more-menu').classList.toggle('open');
+  }
+  document.addEventListener('click', e => {
+    const menu = document.getElementById('more-menu');
+    if (menu.classList.contains('open') && !e.target.closest('.drawer-actions')) {
+      menu.classList.remove('open');
+    }
+  });
+
+  // ── Confirm bar ──────────────────────────────────────────────────
+  const confirmMessages = {
+    goto: `Go back to:
+      <select class="confirm-select">
+        <option>Gate 1 — Concept</option>
+      </select><br>
+      Will permanently discard: <code>02-prd.md</code>, <code>02-challenge.json</code>. Archived to <code>.clados/history/</code> — not coming back into the pipeline.`,
+    restart: `Restart Phase 1 from scratch? This will clear: <code>.clados/wip/02-*.partial.md</code>. Incomplete artifacts are not archived. Phase 0 artifacts are preserved.`,
+    abandon: `Abandon project? The pipeline will stop and <code>00-session-state.json</code> will be marked <code>status: "abandoned"</code>. All artifacts are preserved — you can resume or delete the project manually at any time.`
+  };
+
+  function openConfirm(type) {
+    document.getElementById('more-menu').classList.remove('open');
+    document.getElementById('confirm-text').innerHTML = confirmMessages[type];
+    document.getElementById('confirm-bar').classList.add('open');
+  }
+  function closeConfirm() {
+    document.getElementById('confirm-bar').classList.remove('open');
+  }
+
+  // ── Budget band ──────────────────────────────────────────────────
+  function openBudgetBand() {
+    document.getElementById('budget-band').classList.add('open');
+    // drawer-body stays fully visible below the band
+  }
+  function closeBudgetBand() {
+    document.getElementById('budget-band').classList.remove('open');
+    document.getElementById('budget-band-body').classList.remove('expanded');
+  }
+  function toggleBudgetBody() {
+    document.getElementById('budget-band-body').classList.toggle('expanded');
+  }
+
+  // ── Reconnection banner demo ─────────────────────────────────────
+  function demoReconnecting() {
+    const banner = document.getElementById('reconnect-banner');
+    const msg = document.getElementById('reconnect-msg');
+    banner.className = 'reconnect-banner connecting';
+    msg.textContent = 'Connection lost — reconnecting…';
+    setTimeout(() => {
+      banner.className = 'reconnect-banner success';
+      msg.textContent = 'Reconnected';
+      setTimeout(() => { banner.className = 'reconnect-banner'; }, 3000);
+    }, 2500);
+  }
+  function demoReconnectFailed() {
+    const banner = document.getElementById('reconnect-banner');
+    const msg = document.getElementById('reconnect-msg');
+    banner.className = 'reconnect-banner connecting';
+    msg.textContent = 'Connection lost — reconnecting…';
+    setTimeout(() => {
+      banner.className = 'reconnect-banner failed';
+      msg.textContent = 'Could not reconnect — restart CLaDOS to continue';
+    }, 2500);
+  }
+
+  // ── Revise mode (three-pane) ─────────────────────────────────────
+  function openRevise() {
+    document.getElementById('drawer-body').classList.add('revise-mode');
+    document.getElementById('revise-pane').classList.add('open');
+    setTimeout(() => document.querySelector('.revise-textarea').focus(), 50);
+  }
+  function closeRevise() {
+    document.getElementById('drawer-body').classList.remove('revise-mode');
+    document.getElementById('revise-pane').classList.remove('open');
+  }
+</script>
+
+</body>
+</html>
