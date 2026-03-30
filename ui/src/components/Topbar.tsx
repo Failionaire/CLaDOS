@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import type { SessionState } from '../types';
+import type { PipelineStatus, SessionState } from '../types';
 import { PHASE_LABELS } from '../constants';
 
 interface TopbarProps {
@@ -7,6 +7,9 @@ interface TopbarProps {
   connectionStatus: 'connecting' | 'connected' | 'disconnected' | 'failed';
   onFocusGate: () => void;
   hasPendingGate: boolean;
+  gateNumber?: number;
+  focusMode: boolean;
+  onToggleFocus: () => void;
 }
 
 const STATUS_COLORS: Record<string, string> = {
@@ -18,12 +21,25 @@ const STATUS_COLORS: Record<string, string> = {
   abandoned: '#8b949e',
 };
 
-export function Topbar({ sessionState, connectionStatus, onFocusGate, hasPendingGate }: TopbarProps) {
+function getStatusText(status: PipelineStatus, gateNumber?: number): string {
+  switch (status) {
+    case 'idle': return 'Ready to start';
+    case 'agent_running': return 'Agents running…';
+    case 'gate_pending':
+      return gateNumber != null ? `Waiting for your decision at Gate ${gateNumber}` : 'Waiting for your decision';
+    case 'budget_gate_pending': return 'Budget limit reached';
+    case 'complete': return 'Complete ✓';
+    case 'abandoned': return 'Abandoned';
+    default: return '';
+  }
+}
+
+export function Topbar({ sessionState, connectionStatus, onFocusGate, hasPendingGate, gateNumber, focusMode, onToggleFocus }: TopbarProps) {
   const [showCostBreakdown, setShowCostBreakdown] = useState(false);
   const status = sessionState?.pipeline_status ?? 'idle';
   const phase = sessionState?.current_phase ?? 0;
   const costUsd = sessionState?.total_cost_usd ?? 0;
-  const showCost = sessionState?.phases_completed.includes(0) ?? false;
+  const showCost = (sessionState?.total_cost_usd ?? 0) > 0;
   const projectName = sessionState?.project_name ?? 'CLaDOS';
 
   const phaseBreakdown = (() => {
@@ -36,6 +52,9 @@ export function Topbar({ sessionState, connectionStatus, onFocusGate, hasPending
       .filter((e) => e.cost > 0)
       .sort((a, b) => a.phase - b.phase);
   })();
+
+  const statusColor = STATUS_COLORS[status] ?? '#8b949e';
+  const statusText = getStatusText(status as PipelineStatus, gateNumber);
 
   return (
     <header style={styles.bar}>
@@ -50,6 +69,7 @@ export function Topbar({ sessionState, connectionStatus, onFocusGate, hasPending
       <div style={styles.inner}>
         <div style={styles.left}>
           <span style={styles.logo}>CLaDOS</span>
+          <span style={styles.sep}>/</span>
           <span style={styles.projectName}>{projectName}</span>
         </div>
 
@@ -69,19 +89,36 @@ export function Topbar({ sessionState, connectionStatus, onFocusGate, hasPending
         </div>
 
         <div style={styles.right}>
-          <div style={styles.statusDot(STATUS_COLORS[status])} title={status} />
+          {/* Status indicator: dot + text */}
+          <div style={styles.statusRow}>
+            <div style={styles.statusDot(statusColor)} />
+            <span style={{ ...styles.statusText, color: statusColor }}>{statusText}</span>
+          </div>
+
+          {/* Focus mode toggle */}
+          {sessionState && sessionState.pipeline_status !== 'idle' && (
+            <button
+              style={{ ...styles.focusToggleBtn, ...(focusMode ? styles.focusToggleBtnActive : {}) }}
+              onClick={onToggleFocus}
+              title="Focus mode — collapse non-active phases"
+            >
+              Focus
+            </button>
+          )}
+
+          {/* Cost total with per-phase breakdown on hover */}
           {showCost && (
             <div
               style={{ position: 'relative' }}
               onMouseEnter={() => setShowCostBreakdown(true)}
               onMouseLeave={() => setShowCostBreakdown(false)}
             >
-              <span style={styles.costLabel}>${costUsd.toFixed(4)}</span>
+              <span style={styles.costLabel}>${costUsd.toFixed(4)} used</span>
               {showCostBreakdown && phaseBreakdown.length > 0 && (
                 <div style={styles.costTooltip}>
                   {phaseBreakdown.map(({ phase: p, cost }) => (
                     <div key={p} style={styles.costTooltipRow}>
-                      <span>Phase {p}</span>
+                      <span>Phase {p} — {PHASE_LABELS[p]}</span>
                       <span>${cost.toFixed(4)}</span>
                     </div>
                   ))}
@@ -89,9 +126,11 @@ export function Topbar({ sessionState, connectionStatus, onFocusGate, hasPending
               )}
             </div>
           )}
+
+          {/* Gate review button */}
           {hasPendingGate && (
-            <button style={styles.focusBtn} onClick={onFocusGate}>
-              Review ↑
+            <button style={styles.gateBtn} onClick={onFocusGate}>
+              Gate {gateNumber} ↑
             </button>
           )}
         </div>
@@ -116,6 +155,7 @@ const styles = {
     textAlign: 'center' as const,
     padding: '4px 0',
     fontSize: 12,
+    fontWeight: 500,
   },
   reconnectBannerFailed: {
     background: '#7d1313',
@@ -125,14 +165,14 @@ const styles = {
     display: 'flex',
     alignItems: 'center',
     justifyContent: 'space-between',
-    padding: '0 24px',
+    padding: '0 20px',
     height: 48,
     gap: 16,
   },
   left: {
     display: 'flex',
     alignItems: 'center',
-    gap: 12,
+    gap: 8,
     flex: '0 0 auto',
   },
   logo: {
@@ -140,6 +180,10 @@ const styles = {
     fontSize: 16,
     color: '#58a6ff',
     letterSpacing: '-0.5px',
+  },
+  sep: {
+    color: '#30363d',
+    fontSize: 16,
   },
   projectName: {
     color: '#8b949e',
@@ -174,34 +218,59 @@ const styles = {
     background: '#1a2e1a',
     borderColor: '#3fb950',
   } as React.CSSProperties,
-  statusDot: (color: string) => ({
-    width: 8,
-    height: 8,
-    borderRadius: '50%',
-    background: color,
-  }) as React.CSSProperties,
-  costLabel: {
-    fontSize: 12,
-    color: '#8b949e',
-    fontVariantNumeric: 'tabular-nums',
-    marginLeft: 4,
-  },
   right: {
     display: 'flex',
     alignItems: 'center',
     gap: 10,
     flex: '0 0 auto',
   },
-  focusBtn: {
-    background: '#d29922',
-    color: '#000',
-    border: 'none',
+  statusRow: {
+    display: 'flex',
+    alignItems: 'center',
+    gap: 6,
+  },
+  statusDot: (color: string) => ({
+    width: 7,
+    height: 7,
+    borderRadius: '50%',
+    background: color,
+    flexShrink: 0,
+  }) as React.CSSProperties,
+  statusText: {
+    fontSize: 12,
+    fontWeight: 500,
+    whiteSpace: 'nowrap' as const,
+  },
+  focusToggleBtn: {
+    background: 'transparent',
+    border: '1px solid #30363d',
+    color: '#8b949e',
+    borderRadius: 5,
+    padding: '3px 10px',
+    fontSize: 12,
+    cursor: 'pointer',
+  } as React.CSSProperties,
+  focusToggleBtnActive: {
+    color: '#58a6ff',
+    borderColor: '#58a6ff',
+    background: '#1f3a5c',
+  } as React.CSSProperties,
+  costLabel: {
+    fontSize: 12,
+    color: '#8b949e',
+    fontVariantNumeric: 'tabular-nums',
+    cursor: 'default',
+  },
+  gateBtn: {
+    background: '#3b2800',
+    color: '#d29922',
+    border: '1px solid #d29922',
     borderRadius: 6,
     padding: '4px 12px',
     fontSize: 12,
     fontWeight: 600,
     cursor: 'pointer',
-  },
+  } as React.CSSProperties,
   costTooltip: {
     position: 'absolute' as const,
     right: 0,
@@ -210,7 +279,7 @@ const styles = {
     border: '1px solid #30363d',
     borderRadius: 6,
     padding: '8px 12px',
-    minWidth: 160,
+    minWidth: 200,
     zIndex: 200,
     boxShadow: '0 4px 12px rgba(0,0,0,0.4)',
   },
@@ -224,5 +293,4 @@ const styles = {
     fontVariantNumeric: 'tabular-nums' as const,
   },
 };
-
 

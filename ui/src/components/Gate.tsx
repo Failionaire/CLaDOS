@@ -9,7 +9,7 @@ interface GateProps {
 }
 
 type GateAction = 'approve' | 'revise' | 'goto' | 'abort';
-type GateTab = 'artifact' | 'findings';
+type GateTab = 'artifact' | 'revision';
 
 const MIN_HEIGHT = 200;
 const DEFAULT_HEIGHT = 380;
@@ -146,9 +146,11 @@ export function Gate({ gate, onClose }: GateProps) {
   const mustFixCount = findings.filter((f) => f.severity === 'must_fix' && !overrides[f.id]).length;
   const approveBlocked = mustFixCount > 0;
 
-  const panelWidth = narrowView ? '100%' : 'calc(40% - 4px)';
-  const revisionWidth = narrowView ? '100%' : 'calc(30% - 4px)';
-  const findingsWidth = narrowView ? '100%' : 'calc(30% - 4px)';
+  // Wide view: 40% artifact + 30% revision + 30% findings
+  // Narrow view: 58% left (artifact or revision tab) + 40% findings
+  const artifactPaneWidth = narrowView ? 'calc(58% - 4px)' : 'calc(40% - 4px)';
+  const revisionPaneWidth = narrowView ? 'calc(58% - 4px)' : 'calc(30% - 4px)';
+  const findingsPaneWidth = narrowView ? 'calc(42% - 4px)' : 'calc(30% - 4px)';
 
   return (
     <div style={{ ...styles.drawer, height }}>
@@ -163,12 +165,18 @@ export function Gate({ gate, onClose }: GateProps) {
 
       <div style={styles.toolbar}>
         <span style={styles.gateTitle}>
-          Gate — Phase {gate.phase}
+          Gate {gate.gate_number} — Phase {gate.phase}
           <span style={{ ...styles.revisionBadge, color: revisionColor }}>
-            {' '}Revision {revisionCount} of 3 before Opus escalation
+            {' '}· Revision {revisionCount} of 3 before Opus escalation
           </span>
+          {gate.next_phase_cost_estimate && (
+            <span style={styles.costEstimate}>
+              {' '}· Next phase: {gate.next_phase_cost_estimate}
+            </span>
+          )}
         </span>
 
+        {/* Narrow view: tabs toggle between Artifact and Revision; Findings always shown */}
         {narrowView && (
           <div style={styles.tabBar}>
             <button
@@ -176,9 +184,9 @@ export function Gate({ gate, onClose }: GateProps) {
               onClick={() => setActiveTab('artifact')}
             >Artifact</button>
             <button
-              style={{ ...styles.tab, ...(activeTab === 'findings' ? styles.tabActive : {}) }}
-              onClick={() => setActiveTab('findings')}
-            >Findings ({findings.length})</button>
+              style={{ ...styles.tab, ...(activeTab === 'revision' ? styles.tabActive : {}) }}
+              onClick={() => setActiveTab('revision')}
+            >Revision</button>
           </div>
         )}
 
@@ -189,10 +197,10 @@ export function Gate({ gate, onClose }: GateProps) {
             onClick={() => sendGateResponse('approve')}
             title={approveBlocked ? `${mustFixCount} must-fix finding(s) need overrides or resolution` : 'Approve and continue'}
           >
-            Approve
+            Approve →
           </button>
           <button style={styles.reviseBtn} onClick={() => sendGateResponse('revise')}>
-            Revise
+            ↺ Revise
           </button>
           <div style={styles.moreWrapper}>
             <button
@@ -256,9 +264,9 @@ export function Gate({ gate, onClose }: GateProps) {
       {error && <div style={styles.error}>{error}</div>}
 
       <div style={styles.body}>
-        {/* Artifact pane */}
+        {/* Artifact pane: visible on wide view, or narrow view when artifact tab is active */}
         {(!narrowView || activeTab === 'artifact') && (
-          <div style={{ ...styles.pane, width: panelWidth }}>
+          <div style={{ ...styles.pane, width: artifactPaneWidth }}>
             <div style={styles.paneLabel}>{gate.artifacts[0] ?? ''}</div>
             <div style={styles.paneScroll}>
               {loading
@@ -269,9 +277,9 @@ export function Gate({ gate, onClose }: GateProps) {
           </div>
         )}
 
-        {/* Revision note pane (wide view only) */}
-        {!narrowView && (
-          <div style={{ ...styles.pane, width: revisionWidth }}>
+        {/* Revision pane: always visible on wide view; on narrow, shown when revision tab active */}
+        {(!narrowView || activeTab === 'revision') && (
+          <div style={{ ...styles.pane, width: revisionPaneWidth }}>
             <div style={styles.paneLabel}>Revision note</div>
             <textarea
               style={styles.revisionTextarea}
@@ -282,28 +290,14 @@ export function Gate({ gate, onClose }: GateProps) {
           </div>
         )}
 
-        {/* Findings pane */}
-        {(!narrowView || activeTab === 'findings') && (
-          <div style={{ ...styles.pane, width: findingsWidth }}>
-            <div style={styles.paneLabel}>Findings ({findings.length})</div>
-            <div style={styles.paneScroll}>
-              <ValidatorFindings findings={findings} overrides={overrides} onOverrideChange={handleOverrideChange} />
-            </div>
+        {/* Findings pane: always visible */}
+        <div style={{ ...styles.pane, width: findingsPaneWidth }}>
+          <div style={styles.paneLabel}>Findings ({findings.length})</div>
+          <div style={styles.paneScroll}>
+            <ValidatorFindings findings={findings} overrides={overrides} onOverrideChange={handleOverrideChange} />
           </div>
-        )}
-      </div>
-
-      {/* Revision note on narrow views */}
-      {narrowView && activeTab === 'artifact' && (
-        <div style={styles.narrowRevision}>
-          <textarea
-            style={styles.revisionTextarea}
-            placeholder="Revision note (optional)…"
-            value={revisionNote}
-            onChange={(e) => setRevisionNote(e.target.value)}
-          />
         </div>
-      )}
+      </div>
     </div>
   );
 }
@@ -343,6 +337,11 @@ const styles = {
   revisionBadge: {
     fontSize: 12,
     fontWeight: 400,
+  },
+  costEstimate: {
+    fontSize: 12,
+    fontWeight: 400,
+    color: '#3fb950',
   },
   tabBar: {
     display: 'flex',
@@ -442,10 +441,6 @@ const styles = {
     outline: 'none',
     fontFamily: 'inherit',
     lineHeight: 1.5,
-  },
-  narrowRevision: {
-    padding: '0 12px 8px',
-    flexShrink: 0,
   },
   moreWrapper: {
     position: 'relative' as const,

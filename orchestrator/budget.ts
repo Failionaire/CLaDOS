@@ -1,12 +1,13 @@
 import type { AgentRegistryEntry, SessionState } from './types.js';
 import type { SessionManager } from './session.js';
 
-/** Price per 1M tokens in USD (update when Anthropic reprices) */
-const MODEL_PRICES: Record<string, { input: number; output: number }> = {
-  'claude-sonnet-4-6':  { input: 3.00, output: 15.00 },
-  'claude-opus-4-6':    { input: 5.00, output: 25.00 },
-  'claude-haiku-4-5':   { input: 1.00, output: 5.00  },
-};
+/** Price per 1M tokens in USD — populated at startup from agent-registry.json. */
+let MODEL_PRICES: Record<string, { input: number; output: number }> = {};
+
+/** Called by Conductor.init() after the registry is loaded. */
+export function initModelPrices(prices: Record<string, { input: number; output: number }>): void {
+  MODEL_PRICES = prices;
+}
 
 export const BUDGET_MARGIN = 1.2; // 20% projection margin
 export const SUMMARIZER_BUDGET_CAP_FRACTION = 0.05; // 5% of remaining budget

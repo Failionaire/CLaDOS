@@ -184,6 +184,8 @@ export function createExpressApp(ctx: ServerContext): ReturnType<typeof createSe
     try {
       const state: SessionState = await ctx.session.read(ctx.projectDir);
       ws.send(JSON.stringify({ type: 'state:snapshot', state } satisfies WsServerEvent));
+      // Re-send any active gates that aren't stored in the snapshot
+      ctx.conductor.resendPendingEventsTo(ws);
     } catch { /* state may not exist yet */ }
 
     ws.on('close', () => {

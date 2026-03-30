@@ -56,7 +56,7 @@ npm link
 
 ### Cost
 
-The default models are Claude Sonnet (agents) and Claude Opus (escalation). A full backend-only pipeline costs roughly **$0.50–$2.00** depending on project complexity and revision count. To test cheaply, swap all models in `agent-registry.json` to `claude-haiku-3-5-20241022` — see [docs/Testing-Plan.md](docs/Testing-Plan.md).
+The default models are Claude Sonnet (agents) and Claude Opus (escalation). A full backend-only pipeline costs roughly **$0.50–$2.00** depending on project complexity and revision count. To test cheaply, swap all models in `agent-registry.json` to `claude-haiku-4-5` — see [docs/Testing-Plan.md](docs/Testing-Plan.md).
 
 ---
 

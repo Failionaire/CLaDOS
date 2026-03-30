@@ -1,12 +1,5 @@
 import type { AgentEnabledWhen, SessionConfig } from './types.js';
 
-export const SONNET_MODEL = 'claude-sonnet-4-20250514';
-export const OPUS_MODEL = 'claude-opus-4-20250514';
-export const HAIKU_MODEL = 'claude-haiku-3-5-20241022';
-
-/** Used only for the conductor.reason() escape hatch. Core orchestration is TypeScript — the Conductor never calls Claude for its own decisions. */
-export const CONDUCTOR_MODEL = OPUS_MODEL;
-
 /**
  * Determine which model to use for a given agent dispatch.
  * Escalation rules (from spec):

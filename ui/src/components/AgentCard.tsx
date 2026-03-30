@@ -1,4 +1,3 @@
-import { useEffect, useRef } from 'react';
 import type { AgentCardState } from '../types';
 
 interface AgentCardProps {
@@ -7,201 +6,89 @@ interface AgentCardProps {
   onSkip?: () => void;
 }
 
-const STATUS_COLORS: Record<string, string> = {
-  pending: '#30363d',
-  running: '#1f3a5c',
-  done: '#1a2e1a',
-  flagged: '#3b2800',
-  error: '#3b1219',
-  skipped: '#21262d',
-};
-
-const STATUS_BORDER: Record<string, string> = {
-  pending: '#30363d',
-  running: '#58a6ff',
-  done: '#3fb950',
-  flagged: '#d29922',
-  error: '#f85149',
-  skipped: '#30363d',
-};
-
-const STATUS_LABEL: Record<string, string> = {
+const BADGE_LABEL: Record<string, string> = {
   pending: 'Pending',
   running: 'Running',
+  retrying: 'Retrying',
   done: 'Done',
   flagged: 'Flagged',
   error: 'Error',
   skipped: 'Skipped',
 };
 
-// Cycling colors for the running animation
-const CYCLE_COLORS = ['#58a6ff', '#3fb950', '#d29922', '#bc8cff'];
+const AGENT_ICONS: Record<string, { icon: string, short: string }> = {
+  pm: { icon: 'icon-pm', short: 'PM' },
+  architect: { icon: 'icon-arch', short: 'AR' },
+  engineer: { icon: 'icon-eng', short: 'EN' },
+  'engineer-backend': { icon: 'icon-eng', short: 'BE' },
+  'engineer-frontend': { icon: 'icon-eng', short: 'FE' },
+  qa: { icon: 'icon-qa', short: 'QA' },
+  security: { icon: 'icon-sec', short: 'SC' },
+  validator: { icon: 'icon-val', short: 'V' },
+  docs: { icon: 'icon-doc', short: 'DX' },
+  devops: { icon: 'icon-cd', short: 'CD' },
+};
 
 export function AgentCard({ card, onRetry, onSkip }: AgentCardProps) {
-  const animRef = useRef<number | null>(null);
-  const cardRef = useRef<HTMLDivElement | null>(null);
-  const colorIdxRef = useRef(0);
+  const isGateCard = card.role === 'validator';
+  const roleDisplay = card.role.replace('-', ' ');
+  const cssSafeStatus = card.status === 'retrying' ? 'running retrying' : card.status;
+  const badgeClass = `badge badge-${card.status === 'retrying' ? 'running' : card.status}`;
+  
+  const iconData = AGENT_ICONS[card.role] || { icon: 'icon-pm', short: 'AI' };
 
-  useEffect(() => {
-    if (card.status !== 'running') {
-      if (animRef.current) cancelAnimationFrame(animRef.current);
-      if (cardRef.current) cardRef.current.style.borderColor = STATUS_BORDER[card.status];
-      return;
-    }
-
-    let startTime: number | null = null;
-    const CYCLE_DURATION = 3000;
-
-    const animate = (ts: number) => {
-      if (!startTime) startTime = ts;
-      const elapsed = (ts - startTime) % CYCLE_DURATION;
-      const progress = elapsed / CYCLE_DURATION;
-
-      const colorIdx = Math.floor(progress * CYCLE_COLORS.length) % CYCLE_COLORS.length;
-      if (cardRef.current && colorIdx !== colorIdxRef.current) {
-        colorIdxRef.current = colorIdx;
-        cardRef.current.style.borderColor = CYCLE_COLORS[colorIdx];
-      }
-
-      animRef.current = requestAnimationFrame(animate);
-    };
-
-    animRef.current = requestAnimationFrame(animate);
-    return () => { if (animRef.current) cancelAnimationFrame(animRef.current); };
-  }, [card.status]);
+  if (isGateCard) {
+    return (
+      <div className={`gate-card gate-${card.status === 'flagged' ? 'active' : card.status === 'pending' ? 'pending' : 'approved'}`}>
+        {card.status === 'flagged' ? 'Review required' : card.status === 'done' ? 'Gate approved' : 'Gate pending'}
+      </div>
+    );
+  }
 
   return (
-    <div
-      ref={cardRef}
-      style={{
-        ...styles.card,
-        background: STATUS_COLORS[card.status],
-        borderColor: STATUS_BORDER[card.status],
-      }}
-    >
-      <div style={styles.header}>
-        <span style={styles.role}>{card.role}</span>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-          {card.model && (card.status === 'running' || card.status === 'done') && (
-            <span style={styles.modelLabel}>{card.model}</span>
-          )}
-          <span style={{ ...styles.statusBadge, color: STATUS_BORDER[card.status] }}>
-            {STATUS_LABEL[card.status]}
-          </span>
+    <div className={`card is-${cssSafeStatus}`}>
+      <div className="card-row">
+        <div style={{ display: 'flex', alignItems: 'center' }}>
+          <span className={`agent-icon ${iconData.icon}`}>{iconData.short}</span>
+          <div className="agent-group">
+            <span className="agent-name">{roleDisplay}</span>
+            {card.model && card.status !== 'pending' && typeof card.model === 'string' && (
+              <span className="agent-nickname">{card.model.split('-').slice(0, 2).join(' ')}</span>
+            )}
+          </div>
         </div>
+        <span className={badgeClass}>{BADGE_LABEL[card.status]}</span>
       </div>
 
-      {card.status === 'running' && card.currentSection && (
-        <div style={styles.section}>⟳ {card.currentSection}</div>
+      {(card.status === 'running' || card.status === 'retrying') && card.currentSection && (
+        <div className="card-desc">⟳ {card.currentSection}</div>
       )}
 
       {card.status === 'done' && (
-        <div style={styles.meta}>
-          <span>{card.inputTokens.toLocaleString()} in</span>
-          <span>·</span>
-          <span>{card.outputTokens.toLocaleString()} out</span>
-          <span>·</span>
-          <span>${card.costUsd.toFixed(4)}</span>
-          {card.contextCompressed && <span style={styles.compressed}>⬇ compressed</span>}
-        </div>
+        <>
+          <div className="card-desc">
+            {card.inputTokens.toLocaleString()} in · {card.outputTokens.toLocaleString()} out · ${card.costUsd.toFixed(4)}
+          </div>
+          <div className="card-indicators">
+             {card.contextCompressed && <span className="indicator indicator-compressed">compressed</span>}
+          </div>
+          {card.artifactKey && (
+            <a className="artifact-link" href={`/project/artifact?path=${encodeURIComponent(card.artifactKey)}`} target="_blank" rel="noreferrer">
+              {card.artifactKey}
+            </a>
+          )}
+        </>
       )}
 
       {card.status === 'error' && (
-        <div style={styles.errorMsg}>{card.errorMessage}</div>
-      )}
-
-      {(onRetry || (onSkip && card.status === 'error')) && (
-        <div style={styles.actions}>
-          {onRetry && <button style={styles.retryBtn} onClick={onRetry}>Retry</button>}
-          {onSkip && card.status === 'error' && (
-            <button style={styles.skipBtn} onClick={onSkip}>Skip</button>
-          )}
-        </div>
+        <>
+          <div className="card-desc" style={{ color: 'var(--red)', marginTop: 4 }}>{card.errorMessage}</div>
+          <div className="card-actions">
+            {onRetry && <button className="card-action-btn" onClick={onRetry}>Retry</button>}
+            {onSkip && card.isSkippable && <button className="card-action-btn" onClick={onSkip}>Skip</button>}
+          </div>
+        </>
       )}
     </div>
   );
 }
-
-const styles = {
-  card: {
-    borderRadius: 8,
-    border: '1px solid',
-    padding: '10px 12px',
-    position: 'relative' as const,
-    overflow: 'hidden',
-    minWidth: 160,
-    transition: 'border-color 0.4s',
-  },
-  header: {
-    display: 'flex',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    marginBottom: 6,
-  },
-  role: {
-    fontWeight: 600,
-    fontSize: 13,
-    color: '#e6edf3',
-  },
-  statusBadge: {
-    fontSize: 11,
-    fontWeight: 500,
-    textTransform: 'uppercase' as const,
-    letterSpacing: '0.5px',
-  },
-  modelLabel: {
-    fontSize: 10,
-    color: '#6e7681',
-    fontFamily: 'monospace',
-  },
-  section: {
-    fontSize: 12,
-    color: '#8b949e',
-    marginBottom: 4,
-    overflow: 'hidden',
-    textOverflow: 'ellipsis',
-    whiteSpace: 'nowrap' as const,
-  },
-  meta: {
-    display: 'flex',
-    gap: 5,
-    fontSize: 11,
-    color: '#8b949e',
-    flexWrap: 'wrap' as const,
-  },
-  compressed: {
-    color: '#d29922',
-    fontSize: 11,
-  },
-  errorMsg: {
-    fontSize: 12,
-    color: '#f85149',
-    marginTop: 4,
-    wordBreak: 'break-word' as const,
-  },
-  actions: {
-    display: 'flex',
-    gap: 6,
-    marginTop: 8,
-  },
-  retryBtn: {
-    background: 'transparent',
-    border: '1px solid #f85149',
-    color: '#f85149',
-    borderRadius: 4,
-    padding: '2px 8px',
-    fontSize: 11,
-    cursor: 'pointer',
-  },
-  skipBtn: {
-    background: 'transparent',
-    border: '1px solid #8b949e',
-    color: '#8b949e',
-    borderRadius: 4,
-    padding: '2px 8px',
-    fontSize: 11,
-    cursor: 'pointer',
-  },
-};
-
-

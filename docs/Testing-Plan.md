@@ -7,7 +7,7 @@ Here are the four most practical ways to test CLaDOS without draining your walle
 ### 1. The "Oops, All Haiku!" Strategy (Cheap Real Runs)
 Currently, your agent-registry.json assigns `claude-sonnet-...` as the default and `claude-opus-...` as the escalation model. Haiku is about **95% cheaper** than Opus and ~75% cheaper than Sonnet. 
 
-For pipeline testing, you can temporarily find/replace all models in agent-registry.json to `claude-haiku-3-5-20241022`. 
+For pipeline testing, you can temporarily set all models in agent-registry.json to `claude-haiku-4-5`. 
 * **The Benefit:** It still tests real LLM generation, tool usage, and context assembly.
 * **The Bonus:** Haiku is less capable at complex coding, which means it will naturally fail more often. This is actually *perfect* because it natively exercises your `must_fix` finding revision loops, the `conductor.reason()` escape hatch, and the `Error` transition states without you having to artificially break things.
 

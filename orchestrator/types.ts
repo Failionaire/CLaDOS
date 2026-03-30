@@ -160,6 +160,12 @@ export interface AgentRegistryEntry {
 export interface AgentRegistry {
   agents: AgentRegistryEntry[];
   rate_limit_tpm: number;
+  utility_models: {
+    token_counter: string;
+    summarizer: string;
+    conductor: string;
+  };
+  model_prices: Record<string, { input: number; output: number }>;
 }
 
 // ─── Agent dispatch ───────────────────────────────────────────────────────────

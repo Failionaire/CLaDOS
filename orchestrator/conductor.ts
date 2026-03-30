@@ -24,19 +24,19 @@ import type {
 import { SessionManager } from './session.js';
 import { Logger } from './logger.js';
 import { Semaphore, RollingTpmTracker } from './parallel.js';
-import { BudgetManager, BudgetGate, calculateCostUsd } from './budget.js';
+import { BudgetManager, BudgetGate, calculateCostUsd, initModelPrices } from './budget.js';
 import {
   resolveContextArtifacts,
   injectVariables,
   validateSystemPromptSections,
   passesStructuralMarkerTest,
   estimateTokens,
+  initContextModels,
 } from './context.js';
 import {
   resolveModel,
   isAgentEnabled,
   isSkippable,
-  OPUS_MODEL,
 } from './escalation.js';
 import writeFileAtomic from 'write-file-atomic';
 
@@ -86,9 +86,11 @@ export class Conductor {
 
   /** Pending gate: set when waiting for human, resolved by handleGateResponse() */
   private gateResolve: ((response: GateResponse) => void) | null = null;
+  private currentGateEvent: WsServerEvent | null = null;
 
   /** Resolved by handleBudgetUpdate() (true = continue) or handleBudgetAbort() (false = stop) */
   private budgetGateResolve: ((shouldContinue: boolean) => void) | null = null;
+  private currentBudgetGateEvent: WsServerEvent | null = null;
 
   /**
    * Per-agent error resolution: keyed by role.
@@ -122,6 +124,16 @@ export class Conductor {
     this.broadcast = fn;
   }
 
+  /** Called by server.ts on new connections to push active gate events that aren't in SessionState */
+  resendPendingEventsTo(ws: import('ws').WebSocket): void {
+    if (this.currentGateEvent && ws.readyState === 1) {
+      ws.send(JSON.stringify(this.currentGateEvent));
+    }
+    if (this.currentBudgetGateEvent && ws.readyState === 1) {
+      ws.send(JSON.stringify(this.currentBudgetGateEvent));
+    }
+  }
+
   async init(): Promise<void> {
     const raw = await fs.promises.readFile(REGISTRY_PATH, 'utf-8');
     this.registry = JSON.parse(raw) as AgentRegistry;
@@ -150,12 +162,21 @@ export class Conductor {
         entry.system_prompt_tokens = Math.ceil(promptText.length / 3.5);
       }
     }
+
+    // Initialise utility modules with model names and prices from the registry.
+    // This is the single place where model strings are read from agent-registry.json.
+    initContextModels(
+      this.registry.utility_models.token_counter,
+      this.registry.utility_models.summarizer,
+    );
+    initModelPrices(this.registry.model_prices);
   }
 
   // ─── Gate handling ──────────────────────────────────────────────────────────
 
   handleGateResponse(response: GateResponse): void {
     if (this.gateResolve) {
+      this.currentGateEvent = null;
       this.gateResolve(response);
       this.gateResolve = null;
     }
@@ -164,6 +185,7 @@ export class Conductor {
   /** Called by server.ts POST /budget/update — resumes the pipeline with the new cap. */
   handleBudgetUpdate(): void {
     if (this.budgetGateResolve) {
+      this.currentBudgetGateEvent = null;
       this.budgetGateResolve(true);
       this.budgetGateResolve = null;
     }
@@ -172,6 +194,7 @@ export class Conductor {
   /** Called by server.ts POST /budget/abort — abandons the pipeline at a budget gate. */
   handleBudgetAbort(): void {
     if (this.budgetGateResolve) {
+      this.currentBudgetGateEvent = null;
       this.budgetGateResolve(false);
       this.budgetGateResolve = null;
     }
@@ -803,7 +826,7 @@ export class Conductor {
 
     await this.session.update(projectDir, { pipeline_status: 'gate_pending' });
 
-    this.broadcast({
+    this.currentGateEvent = {
       type: 'gate:open',
       phase,
       gate_number: gateNumber,
@@ -811,7 +834,8 @@ export class Conductor {
       findings,
       revision_count: checkpoint.gate_revision_count,
       next_phase_cost_estimate: nextPhaseCostEstimate,
-    });
+    };
+    this.broadcast(this.currentGateEvent);
 
     this.logger.info('gate.open', `Gate ${gateNumber} open — waiting for human decision`);
 
@@ -826,7 +850,7 @@ export class Conductor {
           const approved = await this.handleGateApprove(projectDir, phase, response);
           if (approved) return;
           // Blocked — re-broadcast so the client knows the gate is still open
-          this.broadcast({
+          this.currentGateEvent = {
             type: 'gate:open',
             phase,
             gate_number: gateNumber,
@@ -834,7 +858,8 @@ export class Conductor {
             findings,
             revision_count: checkpoint.gate_revision_count,
             next_phase_cost_estimate: nextPhaseCostEstimate,
-          });
+          };
+          this.broadcast(this.currentGateEvent);
           break;
         }
 
@@ -1102,7 +1127,7 @@ export class Conductor {
 
     try {
       const msg = await this.anthropic.messages.create({
-        model: OPUS_MODEL,
+        model: this.registry.utility_models.conductor,
         max_tokens: 1500,
         messages: [{ role: 'user', content: question }],
       });
@@ -1408,15 +1433,17 @@ export class Conductor {
         } catch (err) {
           // ── Budget gate ───────────────────────────────────────────────────
           if (err instanceof BudgetGate) {
-            this.broadcast({
+            this.currentBudgetGateEvent = {
               type: 'budget:gate',
               current_spend_usd: err.currentSpendUsd,
               remaining_budget_usd: err.remainingBudgetUsd,
               blocked_agent: err.blockedAgent,
               projected_cost_usd: err.projectedCostUsd,
-            });
+            };
+            this.broadcast(this.currentBudgetGateEvent);
             // Wait for the user to raise the cap or stop the pipeline
             const shouldContinue = await new Promise<boolean>((resolve) => { this.budgetGateResolve = resolve; });
+            this.currentBudgetGateEvent = null;
             if (!shouldContinue) {
               await this.session.update(projectDir, { pipeline_status: 'abandoned' });
               throw new Error('PIPELINE_ABANDONED');
@@ -1486,6 +1513,8 @@ export class Conductor {
       ...variables,
     });
 
+    this.logger.debug('agent.dispatch_start', `${role} phase ${phase}: loading context`);
+
     // Assemble context artifacts
     const artifacts = contextArtifacts ?? entry.context_artifacts;
 
@@ -1537,7 +1566,9 @@ export class Conductor {
     // system_prompt_tokens is pre-computed at startup; counting them again here
     // would double-count relative to estimateNextPhase projections.
     const systemTokens = entry.system_prompt_tokens ?? Math.ceil(systemPrompt.length / 3.5);
+    this.logger.debug('agent.token_count', `${role} phase ${phase}: estimating context tokens`);
     const contextTokens = await estimateTokens(userContent, this.anthropic, this.logger);
+    this.logger.debug('agent.token_count', `${role} phase ${phase}: context ~${contextTokens} tokens, checking budget`);
     const totalInputTokens = systemTokens + contextTokens;
 
     // Budget pre-check
@@ -1557,7 +1588,7 @@ export class Conductor {
     await this.session.update(projectDir, { pipeline_status: 'agent_running' });
 
     this.logger.setContext(phase, role);
-    this.logger.info('agent.dispatch', `Dispatching ${role} (${model})`);
+    this.logger.info('agent.dispatch', `Dispatching ${role} (${model}) — context ${contextTokens} tokens + system ${systemTokens} tokens`);
     this.broadcast({ type: 'agent:start', phase, agent: errorKey ?? role, model });
 
     // Retry loop

@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { AgentCard } from './AgentCard';
-import type { AgentCardState, SessionState, WsEvent } from '../types';
+import type { AgentCardState, SessionConfig, SessionState, WsEvent } from '../types';
 import { PHASE_LABELS } from '../constants';
 
 interface KanbanBoardProps {
@@ -8,20 +8,26 @@ interface KanbanBoardProps {
   events: WsEvent[];
   onRetry: (phase: number, agent: string, errorKey?: string) => void;
   onSkip: (phase: number, agent: string, errorKey?: string) => void;
+  focusMode: boolean;
 }
 
-// The ordered agents per phase (non-full-stack)
 const PHASE_AGENTS: Record<number, string[]> = {
   0: ['pm', 'validator'],
   1: ['pm', 'architect', 'engineer', 'validator'],
-  2: ['engineer', 'qa', 'validator', 'security', 'wrecker'],
   3: ['docs', 'pm', 'validator'],
   4: ['devops', 'validator'],
 };
 
-function getPhaseAgents(phase: number, projectType?: string | null): string[] {
-  if (phase === 2 && projectType === 'full-stack') {
-    return ['engineer-backend', 'engineer-frontend', 'qa', 'validator', 'security', 'wrecker'];
+type AgentConfig = Pick<SessionConfig, 'project_type' | 'security_enabled' | 'wrecker_enabled'>;
+
+function getPhaseAgents(phase: number, config?: AgentConfig | null): string[] {
+  if (phase === 2) {
+    const base = config?.project_type === 'full-stack'
+      ? ['engineer-backend', 'engineer-frontend', 'qa', 'validator']
+      : ['engineer', 'qa', 'validator'];
+    if (config?.security_enabled) base.push('security');
+    if (config?.wrecker_enabled) base.push('wrecker');
+    return base;
   }
   return PHASE_AGENTS[phase] ?? [];
 }
@@ -40,14 +46,48 @@ const blankCard = (role: string, phase: number): AgentCardState => ({
   contextCompressed: false,
   isSkippable: false,
   errorKey: undefined,
+  retryCount: 0,
 });
 
-function buildInitialCards(phase: number): AgentCardState[] {
-  return (PHASE_AGENTS[phase] ?? []).map((role) => blankCard(role, phase));
+function buildCardsFromSnapshot(state: SessionState): Record<string, AgentCardState> {
+  const result: Record<string, AgentCardState> = {};
+  for (let p = 0; p <= 4; p++) {
+    for (const role of getPhaseAgents(p, state.config)) {
+      const key = `${p}:${role}`;
+      let status: AgentCardState['status'] = 'pending';
+      const phaseTokens = state.agent_tokens_used?.[String(p)]?.[role];
+      const inputTokens = phaseTokens?.input ?? 0;
+      const outputTokens = phaseTokens?.output ?? 0;
+      const costUsd = phaseTokens?.cost_usd ?? 0;
+
+      if (state.phases_completed.includes(p)) {
+        status = 'done';
+      } else if (p < state.current_phase) {
+        status = costUsd > 0 ? 'done' : 'pending';
+      } else if (p === state.current_phase && state.phase_checkpoint) {
+        const cp = state.phase_checkpoint;
+        if (cp.completed_agents.includes(role)) {
+          status = (state.pipeline_status === 'gate_pending' && role === 'validator')
+            ? 'flagged'
+            : 'done';
+        } else if (cp.in_progress_agent === role) {
+          status = 'running';
+        }
+      }
+
+      result[key] = {
+        ...blankCard(role, p),
+        status,
+        inputTokens,
+        outputTokens,
+        costUsd,
+      };
+    }
+  }
+  return result;
 }
 
-export function KanbanBoard({ sessionState, events, onRetry, onSkip }: KanbanBoardProps) {
-  // Phase column collapse state (persisted in localStorage)
+export function KanbanBoard({ sessionState, events, onRetry, onSkip, focusMode }: KanbanBoardProps) {
   const [collapsed, setCollapsed] = useState<Record<number, boolean>>(() => {
     try {
       const saved = localStorage.getItem('clados:collapsed');
@@ -55,12 +95,13 @@ export function KanbanBoard({ sessionState, events, onRetry, onSkip }: KanbanBoa
     } catch { return {}; }
   });
 
-  // Per-phase, per-agent card state derived from WS events
   const [cards, setCards] = useState<Record<string, AgentCardState>>(() => {
     const initial: Record<string, AgentCardState> = {};
+    const basePhase2 = ['engineer', 'qa', 'validator'];
     for (let p = 0; p <= 4; p++) {
-      for (const card of buildInitialCards(p)) {
-        initial[`${p}:${card.role}`] = card;
+      const roles = p === 2 ? basePhase2 : (PHASE_AGENTS[p] ?? []);
+      for (const role of roles) {
+        initial[`${p}:${role}`] = blankCard(role, p);
       }
     }
     return initial;
@@ -72,10 +113,9 @@ export function KanbanBoard({ sessionState, events, onRetry, onSkip }: KanbanBoa
     const latestEvent = events[events.length - 1];
     if (!latestEvent) return;
 
-    // On reconnect, App.tsx resets events to [snapshot] (H-8).
-    // Clear the index-based dedup set so subsequent real events are processed.
     if (latestEvent.type === 'state:snapshot') {
       processedEvents.current.clear();
+      setCards(buildCardsFromSnapshot(latestEvent.state));
       return;
     }
 
@@ -89,9 +129,10 @@ export function KanbanBoard({ sessionState, events, onRetry, onSkip }: KanbanBoa
       switch (latestEvent.type) {
         case 'agent:start': {
           const key = `${latestEvent.phase}:${latestEvent.agent}`;
+          const prev_card = next[key];
           next[key] = {
-            ...(next[key] ?? buildInitialCards(latestEvent.phase).find((c) => c.role === latestEvent.agent)!),
-            status: 'running',
+            ...(prev_card ?? blankCard(latestEvent.agent, latestEvent.phase)),
+            status: prev_card?.status === 'error' ? 'retrying' : 'running',
             model: latestEvent.model,
             currentSection: null,
           };
@@ -115,6 +156,7 @@ export function KanbanBoard({ sessionState, events, onRetry, onSkip }: KanbanBoa
               costUsd: latestEvent.cost_usd,
               artifactKey: latestEvent.artifact,
               contextCompressed: latestEvent.context_compressed,
+              retryCount: 0,
             };
           }
           break;
@@ -128,6 +170,7 @@ export function KanbanBoard({ sessionState, events, onRetry, onSkip }: KanbanBoa
               errorMessage: latestEvent.message,
               isSkippable: latestEvent.is_skippable,
               errorKey: latestEvent.error_key,
+              retryCount: latestEvent.retry_count,
             };
           }
           break;
@@ -140,7 +183,6 @@ export function KanbanBoard({ sessionState, events, onRetry, onSkip }: KanbanBoa
           break;
         }
         case 'gate:open': {
-          // Flag the Validator card for this phase — it's always the gate-owner
           const key = `${latestEvent.phase}:validator`;
           if (next[key]?.status === 'done') {
             next[key] = { ...next[key], status: 'flagged' };
@@ -164,33 +206,31 @@ export function KanbanBoard({ sessionState, events, onRetry, onSkip }: KanbanBoa
   const currentPhase = sessionState?.current_phase ?? 0;
 
   return (
-    <div style={styles.board}>
+    <div className="board" id="board">
       {[0, 1, 2, 3, 4].map((phase) => {
         const isActive = phase === currentPhase;
         const isDone = sessionState?.phases_completed.includes(phase);
-        const isCollapsed = collapsed[phase] ?? false;
-        const phaseCards = getPhaseAgents(phase, sessionState?.config.project_type).map(
+        const colStateClass = isDone ? 'done' : isActive ? 'active' : 'pending';
+        const colStateLabel = isDone ? 'Done' : isActive ? 'Active' : 'Pending';
+        
+        const isCollapsed = collapsed[phase] ?? (focusMode && !isActive);
+        const phaseCards = getPhaseAgents(phase, sessionState?.config).map(
           (role) => cards[`${phase}:${role}`] ?? blankCard(role, phase),
         );
 
         return (
           <div
             key={phase}
-            style={{
-              ...styles.column,
-              ...(isActive ? styles.columnActive : {}),
-              ...(isCollapsed ? styles.columnCollapsed : {}),
-            }}
+            id={`col-${phase}`}
+            className={`col ${isCollapsed ? 'collapsed' : ''}`}
           >
-            <button style={styles.columnHeader} onClick={() => toggleCollapse(phase)}>
-              <span style={{ color: isDone ? '#3fb950' : isActive ? '#58a6ff' : '#8b949e' }}>
-                {`Phase ${phase} — ${PHASE_LABELS[phase]}`}
-              </span>
-              <span style={styles.collapseIcon}>{isCollapsed ? '▶' : '▼'}</span>
-            </button>
+            <div className={`col-head ${colStateClass}`} onClick={() => toggleCollapse(phase)} style={{ cursor: 'pointer' }}>
+              <span className="col-head-text">{`Phase ${phase} — ${PHASE_LABELS[phase]}`}</span>
+              <span className="col-badge">{colStateLabel}</span>
+            </div>
 
-            {!isCollapsed && (
-              <div style={styles.cardList}>
+            <div className="col-cards">
+              <div className="agent-group">
                 {phaseCards.map((card) => (
                   <AgentCard
                     key={`${card.phase}:${card.role}`}
@@ -200,6 +240,12 @@ export function KanbanBoard({ sessionState, events, onRetry, onSkip }: KanbanBoa
                   />
                 ))}
               </div>
+            </div>
+
+            {isCollapsed && (
+              <button className="col-toggle" onClick={() => toggleCollapse(phase)}>
+                Expand
+              </button>
             )}
           </div>
         );
@@ -207,58 +253,5 @@ export function KanbanBoard({ sessionState, events, onRetry, onSkip }: KanbanBoa
     </div>
   );
 }
-
-const styles = {
-  board: {
-    display: 'flex',
-    gap: 12,
-    padding: '16px 24px',
-    overflowX: 'auto' as const,
-    alignItems: 'flex-start',
-    minHeight: 'calc(100vh - 48px)',
-    marginTop: 48,
-  },
-  column: {
-    flex: '0 0 200px',
-    background: '#161b22',
-    borderRadius: 8,
-    border: '1px solid #30363d',
-    overflow: 'hidden',
-    transition: 'flex-basis 0.2s',
-  },
-  columnActive: {
-    flex: '0 0 220px',
-    borderColor: '#58a6ff',
-  },
-  columnCollapsed: {
-    flex: '0 0 48px',
-  },
-  columnHeader: {
-    display: 'flex',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    width: '100%',
-    padding: '10px 12px',
-    background: 'transparent',
-    border: 'none',
-    cursor: 'pointer',
-    color: '#e6edf3',
-    fontWeight: 600,
-    fontSize: 12,
-    textAlign: 'left' as const,
-    whiteSpace: 'nowrap' as const,
-    overflow: 'hidden',
-  },
-  collapseIcon: {
-    fontSize: 10,
-    color: '#8b949e',
-  },
-  cardList: {
-    display: 'flex',
-    flexDirection: 'column' as const,
-    gap: 8,
-    padding: '0 10px 12px',
-  },
-};
 
 

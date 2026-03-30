@@ -158,7 +158,7 @@ export type WsEvent =
   | WsStateSnapshot;
 
 // AgentStatus tracks per-agent UI state derived from WS events
-export type AgentCardStatus = 'pending' | 'running' | 'done' | 'flagged' | 'error' | 'skipped';
+export type AgentCardStatus = 'pending' | 'running' | 'retrying' | 'done' | 'flagged' | 'error' | 'skipped';
 
 export interface AgentCardState {
   role: string;
@@ -174,4 +174,5 @@ export interface AgentCardState {
   contextCompressed: boolean;
   isSkippable: boolean;
   errorKey?: string;
+  retryCount: number;
 }

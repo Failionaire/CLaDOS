@@ -2,6 +2,8 @@ import { useState, useEffect } from 'react';
 import { Topbar } from './components/Topbar';
 import { KanbanBoard } from './components/KanbanBoard';
 import { Gate } from './components/Gate';
+import { ActivityLog } from './components/ActivityLog';
+import { SetupScreen } from './components/SetupScreen';
 import { useWebSocket } from './hooks/useWebSocket';
 import type { WsEvent, WsGateOpen, WsBudgetGate } from './types';
 
@@ -12,12 +14,22 @@ export default function App() {
   const [gateVisible, setGateVisible] = useState(false);
   const [budgetGate, setBudgetGate] = useState<WsBudgetGate | null>(null);
   const [newCapInput, setNewCapInput] = useState('');
+  const [focusMode, setFocusMode] = useState(false);
 
   // Accumulate events; reset to just the snapshot on reconnect (H-8)
   useEffect(() => {
     if (!lastEvent) return;
     if (lastEvent.type === 'state:snapshot') {
       setEvents([lastEvent]);  // reset on reconnect — don't mix stale pre-disconnect events
+      
+      // Clear gates if they are no longer pending in the state snapshot
+      if (lastEvent.state.pipeline_status !== 'gate_pending') {
+        setCurrentGate(null);
+        setGateVisible(false);
+      }
+      if (lastEvent.state.pipeline_status !== 'budget_gate_pending') {
+        setBudgetGate(null);
+      }
     } else {
       setEvents((prev) => [...prev, lastEvent]);
     }
@@ -56,6 +68,9 @@ export default function App() {
     }
   };
 
+  // Show setup screen when connected and pipeline hasn't started yet
+  const showSetup = connectionStatus === 'connected' && sessionState?.pipeline_status === 'idle';
+
   return (
     <div style={{ minHeight: '100vh', display: 'flex', flexDirection: 'column' }}>
       <Topbar
@@ -63,6 +78,9 @@ export default function App() {
         connectionStatus={connectionStatus}
         onFocusGate={() => setGateVisible(true)}
         hasPendingGate={currentGate !== null && !gateVisible}
+        gateNumber={currentGate?.gate_number}
+        focusMode={focusMode}
+        onToggleFocus={() => setFocusMode((v) => !v)}
       />
 
       <KanbanBoard
@@ -70,7 +88,14 @@ export default function App() {
         events={events}
         onRetry={handleRetry}
         onSkip={handleSkip}
+        focusMode={focusMode}
       />
+
+      <ActivityLog events={events} />
+
+      {showSetup && (
+        <SetupScreen projectName={sessionState?.project_name ?? ''} />
+      )}
 
       {gateVisible && currentGate && (
         <Gate

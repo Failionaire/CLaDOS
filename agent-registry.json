@@ -142,5 +142,15 @@
       "expected_tool_turns": 2
     }
   ],
-  "rate_limit_tpm": 80000
+  "rate_limit_tpm": 80000,
+  "utility_models": {
+    "token_counter": "claude-sonnet-4-6",
+    "summarizer":    "claude-haiku-4-5",
+    "conductor":     "claude-opus-4-6"
+  },
+  "model_prices": {
+    "claude-sonnet-4-6": { "input": 3.00, "output": 15.00 },
+    "claude-opus-4-6":   { "input": 5.00, "output": 25.00 },
+    "claude-haiku-4-5":  { "input": 1.00, "output":  5.00 }
+  }
 }

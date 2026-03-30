@@ -3,7 +3,16 @@ import path from 'path';
 import Anthropic from '@anthropic-ai/sdk';
 import type { ContextArtifact } from './types.js';
 import type { Logger } from './logger.js';
-import { SONNET_MODEL, HAIKU_MODEL } from './escalation.js';
+
+// Model names used for utility calls — set once at startup from the registry.
+let _tokenCounterModel = 'claude-sonnet-4-6';
+let _summarizerModel = 'claude-haiku-4-5';
+
+/** Called by Conductor.init() after the registry is loaded. */
+export function initContextModels(tokenCounter: string, summarizer: string): void {
+  _tokenCounterModel = tokenCounter;
+  _summarizerModel = summarizer;
+}
 
 // ─── Tree-sitter AST extraction ───────────────────────────────────────────────
 
@@ -87,16 +96,24 @@ export interface ResolvedArtifact {
  * Estimate token count for a string. Uses Anthropic's countTokens if available,
  * falls back to char-based approximation.
  */
+const TOKEN_COUNT_TIMEOUT_MS = 15_000;
+
 export async function estimateTokens(
   text: string,
   anthropic: Anthropic,
   logger: Logger,
 ): Promise<number> {
   try {
-    const result = await anthropic.beta.messages.countTokens({
-      model: SONNET_MODEL,
-      messages: [{ role: 'user', content: text }],
-    });
+    const timeout = new Promise<never>((_, reject) =>
+      setTimeout(() => reject(new Error('countTokens timeout')), TOKEN_COUNT_TIMEOUT_MS),
+    );
+    const result = await Promise.race([
+      anthropic.beta.messages.countTokens({
+        model: _tokenCounterModel,
+        messages: [{ role: 'user', content: text }],
+      }),
+      timeout,
+    ]);
     return result.input_tokens;
   } catch {
     logger.warn('context.token_count_fallback', 'countTokens unavailable — using char estimate');
@@ -122,7 +139,7 @@ export async function summarizeFile(
 
   try {
     const msg = await anthropic.messages.create({
-      model: HAIKU_MODEL,
+      model: _summarizerModel,
       max_tokens: 120,
       messages: [
         {
