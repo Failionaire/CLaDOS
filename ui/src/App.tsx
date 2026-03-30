@@ -4,6 +4,7 @@ import { KanbanBoard } from './components/KanbanBoard';
 import { Gate } from './components/Gate';
 import { ActivityLog } from './components/ActivityLog';
 import { SetupScreen } from './components/SetupScreen';
+import { ArtifactSidebar } from './components/ArtifactSidebar';
 import { useWebSocket } from './hooks/useWebSocket';
 import type { WsEvent, WsGateOpen, WsBudgetGate } from './types';
 
@@ -15,6 +16,7 @@ export default function App() {
   const [budgetGate, setBudgetGate] = useState<WsBudgetGate | null>(null);
   const [newCapInput, setNewCapInput] = useState('');
   const [focusMode, setFocusMode] = useState(false);
+  const [sidebarOpen, setSidebarOpen] = useState(false);
 
   // Accumulate events; reset to just the snapshot on reconnect (H-8)
   useEffect(() => {
@@ -72,7 +74,7 @@ export default function App() {
   const showSetup = connectionStatus === 'connected' && sessionState?.pipeline_status === 'idle';
 
   return (
-    <div style={{ minHeight: '100vh', display: 'flex', flexDirection: 'column' }}>
+    <div style={{ minHeight: '100vh', display: 'flex', flexDirection: 'column', paddingTop: '48px' }}>
       <Topbar
         sessionState={sessionState}
         connectionStatus={connectionStatus}
@@ -81,6 +83,8 @@ export default function App() {
         gateNumber={currentGate?.gate_number}
         focusMode={focusMode}
         onToggleFocus={() => setFocusMode((v) => !v)}
+        onToggleSidebar={() => setSidebarOpen((v) => !v)}
+        sidebarOpen={sidebarOpen}
       />
 
       <KanbanBoard
@@ -92,6 +96,12 @@ export default function App() {
       />
 
       <ActivityLog events={events} />
+
+      <ArtifactSidebar 
+        isOpen={sidebarOpen} 
+        onClose={() => setSidebarOpen(false)} 
+        sessionState={sessionState} 
+      />
 
       {showSetup && (
         <SetupScreen projectName={sessionState?.project_name ?? ''} />

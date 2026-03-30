@@ -10,6 +10,8 @@ interface TopbarProps {
   gateNumber?: number;
   focusMode: boolean;
   onToggleFocus: () => void;
+  onToggleSidebar: () => void;
+  sidebarOpen: boolean;
 }
 
 const STATUS_COLORS: Record<string, string> = {
@@ -34,7 +36,7 @@ function getStatusText(status: PipelineStatus, gateNumber?: number): string {
   }
 }
 
-export function Topbar({ sessionState, connectionStatus, onFocusGate, hasPendingGate, gateNumber, focusMode, onToggleFocus }: TopbarProps) {
+export function Topbar({ sessionState, connectionStatus, onFocusGate, hasPendingGate, gateNumber, focusMode, onToggleFocus, onToggleSidebar, sidebarOpen }: TopbarProps) {
   const [showCostBreakdown, setShowCostBreakdown] = useState(false);
   const status = sessionState?.pipeline_status ?? 'idle';
   const phase = sessionState?.current_phase ?? 0;
@@ -133,6 +135,15 @@ export function Topbar({ sessionState, connectionStatus, onFocusGate, hasPending
               Gate {gateNumber} ↑
             </button>
           )}
+
+          {/* Sidebar toggle */}
+          <button
+            style={{ ...styles.focusToggleBtn, ...(sidebarOpen ? styles.focusToggleBtnActive : {}) }}
+            onClick={onToggleSidebar}
+            title="View generated files"
+          >
+            Files
+          </button>
         </div>
       </div>
     </header>

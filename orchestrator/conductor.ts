@@ -1761,7 +1761,12 @@ export class Conductor {
               if (writtenPath && !writtenPaths.includes(writtenPath)) writtenPaths.push(writtenPath);
               // Write WIP from actual artifact content, not raw conversation text
               if (writtenContent) {
+                if (wipHandle) {
+                  await new Promise<void>((res) => { wipHandle!.end(res); });
+                  wipHandle = null;
+                }
                 await writeFileAtomic(wipPath, writtenContent, { encoding: 'utf8' });
+                wipHandle = fs.createWriteStream(wipPath, { flags: 'a', encoding: 'utf8' });
               }
             }
           }
