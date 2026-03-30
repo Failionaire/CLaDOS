@@ -129,6 +129,20 @@ How to roll back to the previous version.
 - `infra/Dockerfile.frontend` — Production Dockerfile for the frontend (multi-stage: build with Node, serve with nginx)
 - Updated `infra/docker-compose.yml` to include the frontend service
 
+## Output schema
+
+All outputs are written via `write_file`. Required files for all project types:
+
+- `infra/Dockerfile`
+- `infra/.env.example`
+- `infra/docker-compose.yml`
+- `.github/workflows/ci.yml`
+- `docs/runbook.md`
+
+Additional files for `full-stack` projects:
+
+- `infra/Dockerfile.frontend`
+
 ## Constraints
 
 - Do not hardcode secrets or API keys in any file. All secrets must be environment variables.

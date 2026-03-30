@@ -25,7 +25,7 @@ This stays in your shell session only — it is never written to disk.
 **2. Start a new project**
 
 ```powershell
-npx clados new my-project
+npm clados new my-project
 ```
 
 CLaDOS creates `./my-project/.clados/`, starts a local web server on a port between 3100–3199, and opens your browser automatically.

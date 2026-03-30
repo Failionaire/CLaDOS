@@ -78,6 +78,14 @@ Write initial v1.0.0 changelog:
 - List every meaningful feature that was implemented
 ```
 
+## Output schema
+
+All outputs are written via `write_file`:
+
+- `03-api-spec-draft.yaml` — Updated OpenAPI spec reflecting final implementation
+- `README.md` — Project readme at repository root
+- `docs/CHANGELOG.md` — Initial v1.0.0 changelog
+
 ## Constraints
 
 - Do not describe any feature you cannot verify exists in `src/`. Use `read_file` to check.
