@@ -13,7 +13,7 @@ import type { Conductor } from './conductor.js';
 import type { SessionManager } from './session.js';
 import type { Logger } from './logger.js';
 
-const UI_DIST = path.join(__dirname, '..', 'ui', 'dist');
+const UI_DIST = path.join(__dirname, '..', '..', 'ui', 'dist');
 
 export interface ServerContext {
   conductor: Conductor;

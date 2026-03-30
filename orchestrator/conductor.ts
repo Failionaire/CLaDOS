@@ -40,7 +40,7 @@ import {
 } from './escalation.js';
 import writeFileAtomic from 'write-file-atomic';
 
-const CLADOS_ROOT = path.join(__dirname, '..');
+const CLADOS_ROOT = path.join(__dirname, '..', '..');
 const REGISTRY_PATH = path.join(CLADOS_ROOT, 'agent-registry.json');
 const RETRY_DELAYS_MS = [2_000, 8_000, 30_000];
 const MAX_RETRIES = 3;
