@@ -136,6 +136,15 @@ export function createExpressApp(ctx: ServerContext): ReturnType<typeof createSe
     }
   });
 
+  /**
+   * POST /budget/abort
+   * Abandons the pipeline when blocked on a budget gate.
+   */
+  app.post('/budget/abort', (_req: Request, res: Response) => {
+    ctx.conductor.handleBudgetAbort();
+    res.json({ ok: true });
+  });
+
   // SPA fallback for client-side routing
   if (fs.existsSync(UI_DIST)) {
     app.get('*', (_req, res) => {

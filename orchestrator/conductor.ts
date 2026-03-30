@@ -87,8 +87,8 @@ export class Conductor {
   /** Pending gate: set when waiting for human, resolved by handleGateResponse() */
   private gateResolve: ((response: GateResponse) => void) | null = null;
 
-  /** Resolved by handleBudgetUpdate() when user raises the spend cap */
-  private budgetGateResolve: (() => void) | null = null;
+  /** Resolved by handleBudgetUpdate() (true = continue) or handleBudgetAbort() (false = stop) */
+  private budgetGateResolve: ((shouldContinue: boolean) => void) | null = null;
 
   /**
    * Per-agent error resolution: keyed by role.
@@ -161,10 +161,18 @@ export class Conductor {
     }
   }
 
-  /** Called by server.ts when the user raises the spend cap via POST /budget/update */
+  /** Called by server.ts POST /budget/update — resumes the pipeline with the new cap. */
   handleBudgetUpdate(): void {
     if (this.budgetGateResolve) {
-      this.budgetGateResolve();
+      this.budgetGateResolve(true);
+      this.budgetGateResolve = null;
+    }
+  }
+
+  /** Called by server.ts POST /budget/abort — abandons the pipeline at a budget gate. */
+  handleBudgetAbort(): void {
+    if (this.budgetGateResolve) {
+      this.budgetGateResolve(false);
       this.budgetGateResolve = null;
     }
   }
@@ -1407,8 +1415,12 @@ export class Conductor {
               blocked_agent: err.blockedAgent,
               projected_cost_usd: err.projectedCostUsd,
             });
-            // Wait for the user to raise the cap (POST /budget/update)
-            await new Promise<void>((resolve) => { this.budgetGateResolve = resolve; });
+            // Wait for the user to raise the cap or stop the pipeline
+            const shouldContinue = await new Promise<boolean>((resolve) => { this.budgetGateResolve = resolve; });
+            if (!shouldContinue) {
+              await this.session.update(projectDir, { pipeline_status: 'abandoned' });
+              throw new Error('PIPELINE_ABANDONED');
+            }
             // Continue outer loop — it will re-read state (with updated spend cap)
             // via the session.read() at the top of the loop before calling dispatchWithRetry.
             continue;
@@ -1428,7 +1440,7 @@ export class Conductor {
               continue;
             }
             this.logger.warn('agent.skipped', `${role} skipped by user`);
-            this.broadcast({ type: 'agent:skipped', phase, agent: role });
+            this.broadcast({ type: 'agent:skipped', phase, agent: errorKey ?? role });
             return {
               role,
               phase,
@@ -1546,7 +1558,7 @@ export class Conductor {
 
     this.logger.setContext(phase, role);
     this.logger.info('agent.dispatch', `Dispatching ${role} (${model})`);
-    this.broadcast({ type: 'agent:start', phase, agent: role, model });
+    this.broadcast({ type: 'agent:start', phase, agent: errorKey ?? role, model });
 
     // Retry loop
     let lastError: Error | null = null;
@@ -1593,7 +1605,7 @@ export class Conductor {
         this.broadcast({
           type: 'agent:error',
           phase,
-          agent: role,
+          agent: errorKey ?? role,
           error_type: errorType,
           message: errMsg.slice(0, 200),
           retry_count: retryCount,
@@ -1683,7 +1695,7 @@ export class Conductor {
               const headingMatch = completedLines.match(/^## (.+)$/m);
               if (headingMatch && headingMatch[1] !== currentSection) {
                 currentSection = headingMatch[1]!;
-                this.broadcast({ type: 'agent:stream', phase, agent: role, section: currentSection });
+                this.broadcast({ type: 'agent:stream', phase, agent: errorKey ?? role, section: currentSection });
               }
             }
           }
@@ -1784,7 +1796,7 @@ export class Conductor {
     this.broadcast({
       type: 'agent:done',
       phase,
-      agent: role,
+      agent: errorKey ?? role,
       artifact: primaryArtifactPath,
       tokens_used: { input: totalInput, output: totalOutput },
       cost_usd: costUsd,

@@ -8,9 +8,55 @@ A multi-agent software development system built on the Claude API. You describe 
 
 ---
 
-## WARNING
+## Getting Started
 
-This is very much WIP, please don't actually use it yet.
+### Prerequisites
+
+- **Node.js 18+**
+- **Docker Desktop** — required for Phase 2 (the test runner spins up a database container)
+- **Anthropic API key** — get one at [console.anthropic.com](https://console.anthropic.com)
+
+### Install from source
+
+```bash
+git clone https://github.com/Failionaire/CLaDOS.git
+cd CLaDOS
+npm install
+npm run build:all
+```
+
+`build:all` compiles the TypeScript orchestrator and builds the React UI into `ui/dist/`. Both are required — the server serves the UI as static files.
+
+### Run
+
+```bash
+# macOS / Linux
+export ANTHROPIC_API_KEY=sk-ant-...
+node bin/clados.js new my-project
+
+# Windows PowerShell
+$env:ANTHROPIC_API_KEY = "sk-ant-..."
+node bin/clados.js new my-project
+```
+
+This creates `./my-project/`, starts a local server on a port between 3100–3199, and opens the UI in your browser. From there everything is driven through the web interface.
+
+To come back to a project later:
+
+```bash
+node bin/clados.js resume my-project
+```
+
+### Optional: add `clados` to your PATH
+
+```bash
+npm link
+# Now you can use: clados new my-project
+```
+
+### Cost
+
+The default models are Claude Sonnet (agents) and Claude Opus (escalation). A full backend-only pipeline costs roughly **$0.50–$2.00** depending on project complexity and revision count. To test cheaply, swap all models in `agent-registry.json` to `claude-haiku-3-5-20241022` — see [docs/Testing-Plan.md](docs/Testing-Plan.md).
 
 ---
 
@@ -124,6 +170,9 @@ Once a project ships, CLaDOS converts to an interactive mode where you can highl
 
 ## Docs
 
+- [User Guide](docs/User-Guide.md) — step-by-step walkthrough of the pipeline and UI
+- [Test Projects](docs/Test-Projects.md) — suggested test projects ordered by complexity
+- [Testing Plan](docs/Testing-Plan.md) — how to test without burning through API credits
 - [Goal document](docs/CLaDOS-Goal.md) — full vision and design rationale
 - [V1 Spec](docs/V1-Spec-Alpha.md) — buildable spec for v1; if it's not in here, it doesn't ship
 - [V2 Spec](docs/V2-Spec-Beta.md) — what gets added after v1 is proven
@@ -133,7 +182,9 @@ Once a project ships, CLaDOS converts to an interactive mode where you can highl
 
 ## Status
 
-**Pre-implementation.** Specification and design phase complete. Implementation not yet started.
+**v1 implementation in progress.** Core orchestrator, all 5 phases, 9 agents, contract validator, test runner, session state and crash recovery, and the React UI are implemented. Active testing underway.
+
+See [CHANGELOG](Changelog.md) for what's been built and what's left.
 
 ---
 

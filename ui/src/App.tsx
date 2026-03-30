@@ -11,6 +11,7 @@ export default function App() {
   const [currentGate, setCurrentGate] = useState<WsGateOpen | null>(null);
   const [gateVisible, setGateVisible] = useState(false);
   const [budgetGate, setBudgetGate] = useState<WsBudgetGate | null>(null);
+  const [newCapInput, setNewCapInput] = useState('');
 
   // Accumulate events; reset to just the snapshot on reconnect (H-8)
   useEffect(() => {
@@ -25,6 +26,8 @@ export default function App() {
       setCurrentGate(lastEvent);
       setGateVisible(true);
     } else if (lastEvent.type === 'budget:gate') {
+      const suggested = (lastEvent.current_spend_usd + lastEvent.projected_cost_usd * 2).toFixed(2);
+      setNewCapInput(suggested);
       setBudgetGate(lastEvent);
     }
   }, [lastEvent]);
@@ -100,15 +103,30 @@ export default function App() {
                 <span>${budgetGate.current_spend_usd.toFixed(4)}</span>
               </div>
             </div>
+            <div style={{ marginTop: 12 }}>
+              <label style={{ display: 'block', fontSize: 12, color: '#8b949e', marginBottom: 4 }}>
+                New spend cap ($)
+              </label>
+              <input
+                type="number"
+                min={budgetGate.current_spend_usd + budgetGate.projected_cost_usd}
+                step="0.01"
+                value={newCapInput}
+                onChange={(e) => setNewCapInput(e.target.value)}
+                style={budgetGateStyles.capInput}
+              />
+            </div>
             <div style={budgetGateStyles.actions}>
               <button
                 style={budgetGateStyles.continueBtn}
                 onClick={async () => {
+                  const cap = parseFloat(newCapInput);
+                  if (isNaN(cap) || cap <= 0) return;
                   try {
-                    await fetch('/gate/budget', {
+                    await fetch('/budget/update', {
                       method: 'POST',
                       headers: { 'Content-Type': 'application/json' },
-                      body: JSON.stringify({ action: 'continue' }),
+                      body: JSON.stringify({ new_cap: cap }),
                     });
                   } catch { /* best-effort */ }
                   setBudgetGate(null);
@@ -120,10 +138,9 @@ export default function App() {
                 style={budgetGateStyles.stopBtn}
                 onClick={async () => {
                   try {
-                    await fetch('/gate/budget', {
+                    await fetch('/budget/abort', {
                       method: 'POST',
                       headers: { 'Content-Type': 'application/json' },
-                      body: JSON.stringify({ action: 'stop' }),
                     });
                   } catch { /* best-effort */ }
                   setBudgetGate(null);
@@ -188,6 +205,16 @@ const budgetGateStyles = {
     padding: '6px 14px',
     fontSize: 13,
     cursor: 'pointer',
+  },
+  capInput: {
+    width: '100%',
+    background: '#0d1117',
+    border: '1px solid #30363d',
+    borderRadius: 6,
+    color: '#e6edf3',
+    padding: '6px 10px',
+    fontSize: 13,
+    boxSizing: 'border-box' as const,
   },
   stopBtn: {
     background: '#3b1219',

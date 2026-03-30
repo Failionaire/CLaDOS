@@ -10,7 +10,7 @@ interface KanbanBoardProps {
   onSkip: (phase: number, agent: string, errorKey?: string) => void;
 }
 
-// The ordered agents per phase
+// The ordered agents per phase (non-full-stack)
 const PHASE_AGENTS: Record<number, string[]> = {
   0: ['pm', 'validator'],
   1: ['pm', 'architect', 'engineer', 'validator'],
@@ -19,22 +19,31 @@ const PHASE_AGENTS: Record<number, string[]> = {
   4: ['devops', 'validator'],
 };
 
+function getPhaseAgents(phase: number, projectType?: string | null): string[] {
+  if (phase === 2 && projectType === 'full-stack') {
+    return ['engineer-backend', 'engineer-frontend', 'qa', 'validator', 'security', 'wrecker'];
+  }
+  return PHASE_AGENTS[phase] ?? [];
+}
+
+const blankCard = (role: string, phase: number): AgentCardState => ({
+  role,
+  phase,
+  status: 'pending',
+  currentSection: null,
+  model: null,
+  inputTokens: 0,
+  outputTokens: 0,
+  costUsd: 0,
+  artifactKey: null,
+  errorMessage: null,
+  contextCompressed: false,
+  isSkippable: false,
+  errorKey: undefined,
+});
+
 function buildInitialCards(phase: number): AgentCardState[] {
-  return (PHASE_AGENTS[phase] ?? []).map((role) => ({
-    role,
-    phase,
-    status: 'pending',
-    currentSection: null,
-    model: null,
-    inputTokens: 0,
-    outputTokens: 0,
-    costUsd: 0,
-    artifactKey: null,
-    errorMessage: null,
-    contextCompressed: false,
-    isSkippable: false,
-    errorKey: undefined,
-  }));
+  return (PHASE_AGENTS[phase] ?? []).map((role) => blankCard(role, phase));
 }
 
 export function KanbanBoard({ sessionState, events, onRetry, onSkip }: KanbanBoardProps) {
@@ -160,7 +169,9 @@ export function KanbanBoard({ sessionState, events, onRetry, onSkip }: KanbanBoa
         const isActive = phase === currentPhase;
         const isDone = sessionState?.phases_completed.includes(phase);
         const isCollapsed = collapsed[phase] ?? false;
-        const phaseCards = PHASE_AGENTS[phase].map((role) => cards[`${phase}:${role}`] ?? buildInitialCards(phase).find((c) => c.role === role)!);
+        const phaseCards = getPhaseAgents(phase, sessionState?.config.project_type).map(
+          (role) => cards[`${phase}:${role}`] ?? blankCard(role, phase),
+        );
 
         return (
           <div

@@ -165,7 +165,7 @@ export function Gate({ gate, onClose }: GateProps) {
         <span style={styles.gateTitle}>
           Gate — Phase {gate.phase}
           <span style={{ ...styles.revisionBadge, color: revisionColor }}>
-            {' '}rev {revisionCount}
+            {' '}Revision {revisionCount} of 3 before Opus escalation
           </span>
         </span>
 
@@ -227,6 +227,16 @@ export function Gate({ gate, onClose }: GateProps) {
                     Roll back
                   </button>
                 </div>
+                <button
+                  style={styles.moreMenuBtn}
+                  onClick={() => {
+                    if (window.confirm(`Restart Phase ${gate.phase}? All agents in this phase will re-run from scratch.`)) {
+                      sendGateResponse('goto', { goto_gate: gate.gate_number });
+                    }
+                  }}
+                >
+                  Restart this phase
+                </button>
                 <button
                   style={{ ...styles.moreMenuBtn, ...styles.abandonBtn }}
                   onClick={() => {

@@ -1,3 +1,4 @@
+import { useState } from 'react';
 import type { SessionState } from '../types';
 import { PHASE_LABELS } from '../constants';
 
@@ -18,11 +19,23 @@ const STATUS_COLORS: Record<string, string> = {
 };
 
 export function Topbar({ sessionState, connectionStatus, onFocusGate, hasPendingGate }: TopbarProps) {
+  const [showCostBreakdown, setShowCostBreakdown] = useState(false);
   const status = sessionState?.pipeline_status ?? 'idle';
   const phase = sessionState?.current_phase ?? 0;
   const costUsd = sessionState?.total_cost_usd ?? 0;
   const showCost = sessionState?.phases_completed.includes(0) ?? false;
   const projectName = sessionState?.project_name ?? 'CLaDOS';
+
+  const phaseBreakdown = (() => {
+    if (!sessionState?.agent_tokens_used) return [];
+    return Object.entries(sessionState.agent_tokens_used)
+      .map(([p, agents]) => ({
+        phase: Number(p),
+        cost: Object.values(agents).reduce((sum, t) => sum + t.cost_usd, 0),
+      }))
+      .filter((e) => e.cost > 0)
+      .sort((a, b) => a.phase - b.phase);
+  })();
 
   return (
     <header style={styles.bar}>
@@ -57,7 +70,25 @@ export function Topbar({ sessionState, connectionStatus, onFocusGate, hasPending
 
         <div style={styles.right}>
           <div style={styles.statusDot(STATUS_COLORS[status])} title={status} />
-          {showCost && <span style={styles.costLabel}>${costUsd.toFixed(4)}</span>}
+          {showCost && (
+            <div
+              style={{ position: 'relative' }}
+              onMouseEnter={() => setShowCostBreakdown(true)}
+              onMouseLeave={() => setShowCostBreakdown(false)}
+            >
+              <span style={styles.costLabel}>${costUsd.toFixed(4)}</span>
+              {showCostBreakdown && phaseBreakdown.length > 0 && (
+                <div style={styles.costTooltip}>
+                  {phaseBreakdown.map(({ phase: p, cost }) => (
+                    <div key={p} style={styles.costTooltipRow}>
+                      <span>Phase {p}</span>
+                      <span>${cost.toFixed(4)}</span>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          )}
           {hasPendingGate && (
             <button style={styles.focusBtn} onClick={onFocusGate}>
               Review ↑
@@ -170,6 +201,27 @@ const styles = {
     fontSize: 12,
     fontWeight: 600,
     cursor: 'pointer',
+  },
+  costTooltip: {
+    position: 'absolute' as const,
+    right: 0,
+    top: 'calc(100% + 4px)',
+    background: '#21262d',
+    border: '1px solid #30363d',
+    borderRadius: 6,
+    padding: '8px 12px',
+    minWidth: 160,
+    zIndex: 200,
+    boxShadow: '0 4px 12px rgba(0,0,0,0.4)',
+  },
+  costTooltipRow: {
+    display: 'flex',
+    justifyContent: 'space-between',
+    gap: 16,
+    padding: '2px 0',
+    fontSize: 12,
+    color: '#e6edf3',
+    fontVariantNumeric: 'tabular-nums' as const,
   },
 };
 
