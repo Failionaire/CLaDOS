@@ -32,10 +32,13 @@ export function Gate({ gate, onClose }: GateProps) {
   const [error, setError] = useState<string | null>(null);
   const [moreOpen, setMoreOpen] = useState(false);
   const [gotoTarget, setGotoTarget] = useState<number>(1);
+  const [dragHandleHovered, setDragHandleHovered] = useState(false);
+  const [narrowView, setNarrowView] = useState(() => window.innerWidth < 1100);
   const dragStartY = useRef<number | null>(null);
   const dragStartH = useRef<number>(DEFAULT_HEIGHT);
   const liveHeightRef = useRef(height);
-  const narrowView = typeof window !== 'undefined' && window.innerWidth < 1100;
+  const dragMoveRef = useRef<((e: MouseEvent) => void) | null>(null);
+  const dragEndRef = useRef<(() => void) | null>(null);
 
   // Reset state when gate changes
   useEffect(() => {
@@ -66,6 +69,19 @@ export function Gate({ gate, onClose }: GateProps) {
       .finally(() => setLoading(false));
   }, [gate]);
 
+  useEffect(() => {
+    const handler = () => setNarrowView(window.innerWidth < 1100);
+    window.addEventListener('resize', handler);
+    return () => window.removeEventListener('resize', handler);
+  }, []);
+
+  useEffect(() => {
+    return () => {
+      if (dragMoveRef.current) window.removeEventListener('mousemove', dragMoveRef.current);
+      if (dragEndRef.current) window.removeEventListener('mouseup', dragEndRef.current);
+    };
+  }, []);
+
   const handleOverrideChange = (id: string, checked: boolean) => {
     setOverrides((prev) => ({ ...prev, [id]: checked }));
   };
@@ -91,27 +107,31 @@ export function Gate({ gate, onClose }: GateProps) {
     }
   }, [gate, revisionNote, overrides, onClose]);
 
-  // Drag-to-resize
+  // Drag-to-resize — closures captured at drag-start so add/remove references are always stable
   const onDragStart = (e: React.MouseEvent) => {
     dragStartY.current = e.clientY;
     dragStartH.current = height;
-    window.addEventListener('mousemove', onDragMove);
-    window.addEventListener('mouseup', onDragEnd);
+
+    const move = (ev: MouseEvent) => {
+      const delta = dragStartY.current! - ev.clientY;
+      const newH = Math.max(MIN_HEIGHT, dragStartH.current + delta);
+      setHeight(newH);
+      liveHeightRef.current = newH;
+    };
+
+    const end = () => {
+      window.removeEventListener('mousemove', move);
+      window.removeEventListener('mouseup', end);
+      dragMoveRef.current = null;
+      dragEndRef.current = null;
+      try { localStorage.setItem(STORAGE_KEY, String(liveHeightRef.current)); } catch {}
+    };
+
+    dragMoveRef.current = move;
+    dragEndRef.current = end;
+    window.addEventListener('mousemove', move);
+    window.addEventListener('mouseup', end);
     e.preventDefault();
-  };
-
-  const onDragMove = (e: MouseEvent) => {
-    if (dragStartY.current === null) return;
-    const delta = dragStartY.current - e.clientY;
-    const newH = Math.max(MIN_HEIGHT, dragStartH.current + delta);
-    setHeight(newH);
-    liveHeightRef.current = newH;
-  };
-
-  const onDragEnd = () => {
-    window.removeEventListener('mousemove', onDragMove);
-    window.removeEventListener('mouseup', onDragEnd);
-    try { localStorage.setItem(STORAGE_KEY, String(liveHeightRef.current)); } catch {}
   };
 
   if (!gate) return null;
@@ -133,7 +153,13 @@ export function Gate({ gate, onClose }: GateProps) {
   return (
     <div style={{ ...styles.drawer, height }}>
       {/* Drag handle */}
-      <div style={styles.dragHandle} onMouseDown={onDragStart} title="Drag to resize" />
+      <div
+        style={{ ...styles.dragHandle, ...(dragHandleHovered ? { background: '#30363d' } : {}) }}
+        onMouseDown={onDragStart}
+        onMouseEnter={() => setDragHandleHovered(true)}
+        onMouseLeave={() => setDragHandleHovered(false)}
+        title="Drag to resize"
+      />
 
       <div style={styles.toolbar}>
         <span style={styles.gateTitle}>
@@ -251,7 +277,7 @@ export function Gate({ gate, onClose }: GateProps) {
           <div style={{ ...styles.pane, width: findingsWidth }}>
             <div style={styles.paneLabel}>Findings ({findings.length})</div>
             <div style={styles.paneScroll}>
-              <ValidatorFindings findings={findings} onOverrideChange={handleOverrideChange} />
+              <ValidatorFindings findings={findings} overrides={overrides} onOverrideChange={handleOverrideChange} />
             </div>
           </div>
         )}
@@ -290,7 +316,6 @@ const styles = {
     background: 'transparent',
     borderBottom: '1px solid #30363d',
     flexShrink: 0,
-    '&:hover': { background: '#58a6ff' },
   },
   toolbar: {
     display: 'flex',
@@ -477,4 +502,4 @@ const styles = {
   } as React.CSSProperties,
 };
 
-export default Gate;
+

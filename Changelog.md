@@ -6,6 +6,109 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ---
 
+## [1.0.0-alpha.2] — 2026-03-29
+
+Correctness and hardening pass across the entire codebase. No new user-facing features; all changes close concrete bugs or tighten implementation fidelity against the v1 spec.
+
+### Changed
+
+#### Types (`orchestrator/types.ts`)
+- Added `AgentRole` and `AgentTool` nominal types; `AgentRegistryEntry`, `AgentDispatchConfig`, and `AgentResult` now use them instead of bare `string`
+- `Finding.status` is now required (was optional); `loadValidatorFindings()` normalises missing values to `'new'` so LLM output that omits the field doesn't break filter logic
+- `ArtifactRecord` gains `created_at` and `agent` fields
+- `SessionState` gains `updated_at`, written on every atomic state write
+- `AgentResult` fields renamed to snake_case (`artifactPath` → `artifact_path`, `finalText` → `final_text`, etc.) for consistency with session state
+- `GateResponse` narrowed to a discriminated union; `GateAction` derived from it via `GateResponse['action']` so it can never drift
+- `ContractFinding` narrowed to a discriminated union; each variant carries exactly the fields its `type` implies
+- `TestRunnerResult` refactored: shared fields extracted to `TestSuiteResult` base interface; `wrecker_tests` now extends `TestSuiteResult` (gains `skipped_count` and `duration_ms`)
+
+#### Conductor (`orchestrator/conductor.ts`)
+- `sanitizeJson`: slices to outermost `{…}` correctly, trimming trailing prose that LLMs sometimes append after the JSON value
+- `wipExtForRole`: security agent no longer treated as JSON (it writes `.md`); only `validator`, `qa`, and `wrecker` get `.partial.json`
+- `setBroadcast()` method added for late wiring of the WebSocket broadcast function after the server binds
+- Startup now cleans orphaned WIP partial files, keeping only the one matching the current `in_progress_artifact_partial`
+- All phase entry points: crash recovery now preserves `completed_agents`, `gate_revision_count`, and `unresolved_streak` from the existing checkpoint — agents that finished before a crash are not re-run, and the escape-hatch streak counter is not reset mid-revision-cycle
+- Full-stack parallel engineers: skips any variant (`engineer-backend`, `engineer-frontend`) already in `completed_agents`
+- Spec version drift detection (L-3) logged after the engineer run; frontend re-dispatch triggered if version drifted during parallel execution
+- Removed unused `AGENTS_DIR` and `HAIKU_MODEL` imports
+
+#### Session (`orchestrator/session.ts`)
+- `uuid` imported statically instead of dynamically
+- Per-project promise-chain mutex added to `SessionManager`; all state-mutating operations (`update`, `updateCheckpoint`, `recordTokens`, `registerArtifact`, `bumpSpecVersion`, `appendDecision`, `appendReasoning`) go through `mutateState()`, preventing concurrent read-modify-write races when parallel agents are running
+- `read()` throws a descriptive error on JSON parse failure instead of propagating a raw `SyntaxError`
+- `recordTokens()` now accumulates tokens for re-dispatched roles (revision cycles, retries) instead of replacing the previous record
+- Running cost rounded to microdollar precision (6 decimal places) to prevent floating-point accumulation from causing the displayed total to diverge from per-agent sums
+- `registerArtifact()` auto-increments `version` when overwriting an existing key
+- `init()` writes `updated_at` alongside `created_at`
+
+#### Budget (`orchestrator/budget.ts`)
+- `calculateCostUsd()` throws on unknown model IDs instead of silently falling back to arbitrary Opus prices
+- `checkPreDispatch()` re-reads state from disk on every call so that parallel dispatches (e.g. backend + frontend engineers) each see the latest spend total
+- `checkSummarizerBudget()` applies the same 20% margin as agent dispatch projections for consistent accounting
+- `nextPhaseEstimate()` omits agents with unavailable context data instead of using a zero-token placeholder; includes `system_prompt_tokens` in the input cost estimate to match the dispatch-path accounting
+
+#### CLI (`orchestrator/cli.ts`)
+- `readline` imported statically
+- Project directory is now created **after** setup prompts complete — Ctrl+C during prompts no longer leaves an orphaned directory that blocks a subsequent `clados new`
+- Session init failure cleans up the project directory (best-effort `rm -rf`)
+- `runPipelineLoop()` extracted as a standalone function, eliminating the duplicated `while` loop between `isNew` and `resume` branches
+- `process.once('SIGINT')` used instead of `process.on` to prevent handler stacking if `startServer` were ever re-called
+- SIGINT handler adds a 3-second forced exit timeout to drain live WebSocket connections without hanging indefinitely
+- Idea prompt re-prompts until non-empty input is given; project type selection emits a message on invalid input instead of silently defaulting
+- Fatal error handler now prints the full stack trace
+
+#### Logger (`orchestrator/logger.ts`)
+- Logger constructor creates `.clados/` if it doesn't exist, preventing log write failures on projects where the directory hasn't been created yet
+- `child(phase, agent)` method added: returns a bound logger with fixed context, safe for concurrent use by parallel agents (avoids the shared `setContext` race)
+- Log rotation filename collision handled by adding a counter suffix if the rotated filename already exists
+
+#### Semaphore (`orchestrator/parallel.ts`)
+- Queue entries carry a `reject` callback for proper cancellation support
+- `setSlots()` validates that `n >= 1`
+- `withLock<T>(fn)` helper method added as a safer acquire+release pattern
+
+#### Context management (`orchestrator/context.ts`)
+- `TsParser` interface added; `getTypeScriptParser()` return type tightened
+- Token estimation and summarizer calls use `SONNET_MODEL` / `HAIKU_MODEL` constants instead of hardcoded string literals
+- `resolveContextArtifacts()` loads artifacts in parallel instead of serially
+- Missing required artifacts now throw (previously they were silently skipped, masking pipeline logic errors)
+- `COMPRESSED_TOKEN_ESTIMATE` constant (100 tokens) replaces the magic literal
+- `injectVariables()` strips unreplaced `{{…}}` placeholders to prevent models from misinterpreting the template syntax (H-13)
+- `passesStructuralMarkerTest()` JSON branch: parses the full normalised string instead of a regex-captured substring, eliminating false failures on valid JSON without a leading brace
+
+#### Contract Validator (`agents/_subagents/contract-validator.ts`)
+- `importMap` typed as `Map<string, string | null>`
+- Route matching order corrected: `router.METHOD` is matched before `app.METHOD` to avoid false positives in composition files
+- `resolveImportPath()` returns `null` for unresolvable relative paths instead of guessing a `.ts` extension; callers emit an `unresolved_import` finding
+
+#### Test Runner (`agents/_subagents/test-runner.ts`)
+- `npm install` uses `hostEnv` (PATH + `.env.test` only) instead of the full parent process environment, preventing CLaDOS secrets from leaking to postinstall scripts
+- `parseTapLikeOutput()`: more robustly extracts JSON from stdout by slicing to the outermost `{…}` pair — handles Jest progress text printed before the JSON output
+- `parsePlaywrightJsonOutput()` added; full-stack projects now invoke the Playwright CLI with `--reporter=json` and parse its output, instead of incorrectly using the Jest runner
+- Docker health check uses structured JSON parsing of `docker compose ps` output to avoid false positives on container names that contain the word "healthy"
+- Wrecker test result record gains `skipped_count` and `duration_ms` fields to match the `TestSuiteResult` base interface
+
+#### Agent prompts
+- **PM** (`agents/pm.md`): Inputs section reformatted as a phase-keyed table; Phase 3 task now starts from `03-api-spec-draft.yaml` (produced by Docs) rather than re-deriving the entire spec from source code
+- **Architect** (`agents/architect.md`): Fix loop task section added — instructs the agent to correct only flagged files, not regenerate untouched ones
+- **Engineer** (`agents/engineer.md`): Test user seeding constrained behind a `NODE_ENV !== 'production'` guard or a separate npm script — unconditional seeding in migrations is now explicitly prohibited; fix loop task section added
+- **QA** (`agents/qa.md`): `getAuthToken()` is specified as a factory function (fresh token per call) rather than a module-level singleton; data isolation section added requiring tests to clean up created resources via `afterAll` deletion or unique per-run identifiers
+- **DevOps** (`agents/devops.md`): Dockerfile multi-stage build corrected — production stage now creates a non-root user, runs `npm ci --omit=dev`, and copies from dist rather than inheriting node_modules; `docker-compose.yml` drops the obsolete `version:` key; CI workflow gains docker compose test service setup, health-wait, and teardown steps, conditional on whether the project has a database
+
+#### UI
+- **`App.tsx`**: Budget gate modal implemented — `budget:gate` WS events now display a modal with spend breakdown and Allow/Stop actions; event queue resets on `state:snapshot` so stale pre-disconnect events are not mixed with post-reconnect state
+- **`AgentCard.tsx`**: Running animation changed from a bottom progress bar to a slow border colour cycle (matches the spec); model label shown on running and done cards; Retry/Skip button condition corrected — previously showed on `flagged` cards even when no handlers were passed
+- **`Gate.tsx`**: `narrowView` now tracked reactively via a resize listener (was a static one-time read at render); drag-to-resize refactored to use stable closures captured at drag-start, preventing ghost event listeners; drag handle highlights on hover via React state; `ValidatorFindings` now receives `overrides` as a controlled prop; removed a CSS `&:hover` pseudo-class that has no effect in inline styles
+- **`Topbar.tsx`**: Cost label hidden until Gate 1 completes; `PHASE_LABELS` moved to shared `constants.ts`; corrects the label "Planning" → "Architecture"
+- **`ValidatorFindings.tsx`**: Override checkbox reads from the `overrides` prop passed by `Gate` (controlled state) instead of a nonexistent `finding.override` field
+- **`constants.ts`** *(new)*: Shared `PHASE_LABELS` constant extracted from `Topbar`
+- **`main.tsx`**: `ErrorBoundary` wraps the app root to catch React render errors with a diagnostic screen and a Reload button
+
+### Removed
+- `docs/fix-plan.md` — working notes, no longer needed
+
+---
+
 ## [1.0.0-alpha] — 2026-03-29
 
 Initial implementation of CLaDOS v1. Everything listed here is present in the codebase. Nothing listed in the v1 spec has been deferred — all scope items are accounted for and all out-of-scope items have been explicitly excluded.

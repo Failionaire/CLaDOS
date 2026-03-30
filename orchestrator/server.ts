@@ -73,8 +73,9 @@ export function createExpressApp(ctx: ServerContext): ReturnType<typeof createSe
       }
       const claDosDir = path.join(ctx.projectDir, '.clados');
       const filePath = path.resolve(claDosDir, relPath);
-      // Security: scope to .clados directory
-      if (!filePath.startsWith(path.resolve(claDosDir) + path.sep)) {
+      // Security: use path.relative to guard against path traversal + Windows case-insensitivity (H-9)
+      const relative = path.relative(path.resolve(claDosDir), filePath);
+      if (relative.startsWith('..') || path.isAbsolute(relative)) {
         res.status(403).json({ error: 'Forbidden' });
         return;
       }
@@ -164,7 +165,7 @@ export function createExpressApp(ctx: ServerContext): ReturnType<typeof createSe
   }
 
   // Expose broadcast to conductor
-  (ctx.conductor as unknown as { broadcast: (e: WsServerEvent) => void }).broadcast = broadcast;
+  ctx.conductor.setBroadcast(broadcast);
 
   wss.on('connection', async (ws) => {
     clients.add(ws);

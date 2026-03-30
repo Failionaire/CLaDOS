@@ -3,24 +3,29 @@ import { Topbar } from './components/Topbar';
 import { KanbanBoard } from './components/KanbanBoard';
 import { Gate } from './components/Gate';
 import { useWebSocket } from './hooks/useWebSocket';
-import type { WsEvent, WsGateOpen } from './types';
+import type { WsEvent, WsGateOpen, WsBudgetGate } from './types';
 
 export default function App() {
   const { connectionStatus, sessionState, lastEvent } = useWebSocket();
   const [events, setEvents] = useState<WsEvent[]>([]);
   const [currentGate, setCurrentGate] = useState<WsGateOpen | null>(null);
   const [gateVisible, setGateVisible] = useState(false);
+  const [budgetGate, setBudgetGate] = useState<WsBudgetGate | null>(null);
 
-  // Accumulate all events
+  // Accumulate events; reset to just the snapshot on reconnect (H-8)
   useEffect(() => {
     if (!lastEvent) return;
-    setEvents((prev) => [...prev, lastEvent]);
+    if (lastEvent.type === 'state:snapshot') {
+      setEvents([lastEvent]);  // reset on reconnect — don't mix stale pre-disconnect events
+    } else {
+      setEvents((prev) => [...prev, lastEvent]);
+    }
 
-    if (lastEvent.type === 'gate:open' || lastEvent.type === 'budget:gate') {
-      if (lastEvent.type === 'gate:open') {
-        setCurrentGate(lastEvent);
-        setGateVisible(true);
-      }
+    if (lastEvent.type === 'gate:open') {
+      setCurrentGate(lastEvent);
+      setGateVisible(true);
+    } else if (lastEvent.type === 'budget:gate') {
+      setBudgetGate(lastEvent);
     }
   }, [lastEvent]);
 
@@ -73,6 +78,124 @@ export default function App() {
           }}
         />
       )}
+
+      {budgetGate && (
+        <div style={budgetGateStyles.overlay}>
+          <div style={budgetGateStyles.modal}>
+            <div style={budgetGateStyles.title}>Budget Gate</div>
+            <div style={budgetGateStyles.body}>
+              <p style={{ margin: '0 0 12px' }}>
+                Agent <strong>{budgetGate.blocked_agent}</strong> is blocked — projected cost exceeds your remaining budget.
+              </p>
+              <div style={budgetGateStyles.row}>
+                <span>Projected cost</span>
+                <span>${budgetGate.projected_cost_usd.toFixed(4)}</span>
+              </div>
+              <div style={budgetGateStyles.row}>
+                <span>Remaining budget</span>
+                <span>${budgetGate.remaining_budget_usd.toFixed(4)}</span>
+              </div>
+              <div style={budgetGateStyles.row}>
+                <span>Total spent so far</span>
+                <span>${budgetGate.current_spend_usd.toFixed(4)}</span>
+              </div>
+            </div>
+            <div style={budgetGateStyles.actions}>
+              <button
+                style={budgetGateStyles.continueBtn}
+                onClick={async () => {
+                  try {
+                    await fetch('/gate/budget', {
+                      method: 'POST',
+                      headers: { 'Content-Type': 'application/json' },
+                      body: JSON.stringify({ action: 'continue' }),
+                    });
+                  } catch { /* best-effort */ }
+                  setBudgetGate(null);
+                }}
+              >
+                Allow &amp; continue
+              </button>
+              <button
+                style={budgetGateStyles.stopBtn}
+                onClick={async () => {
+                  try {
+                    await fetch('/gate/budget', {
+                      method: 'POST',
+                      headers: { 'Content-Type': 'application/json' },
+                      body: JSON.stringify({ action: 'stop' }),
+                    });
+                  } catch { /* best-effort */ }
+                  setBudgetGate(null);
+                }}
+              >
+                Stop pipeline
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
+
+const budgetGateStyles = {
+  overlay: {
+    position: 'fixed' as const,
+    inset: 0,
+    background: 'rgba(0,0,0,0.6)',
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+    zIndex: 400,
+  },
+  modal: {
+    background: '#161b22',
+    border: '1px solid #d29922',
+    borderRadius: 8,
+    padding: 24,
+    width: 380,
+    color: '#e6edf3',
+  },
+  title: {
+    fontWeight: 700,
+    fontSize: 15,
+    color: '#d29922',
+    marginBottom: 16,
+  },
+  body: {
+    fontSize: 13,
+    lineHeight: 1.6,
+    marginBottom: 16,
+  },
+  row: {
+    display: 'flex',
+    justifyContent: 'space-between',
+    fontSize: 12,
+    color: '#8b949e',
+    padding: '3px 0',
+  },
+  actions: {
+    display: 'flex',
+    gap: 8,
+    justifyContent: 'flex-end',
+  },
+  continueBtn: {
+    background: '#1a2e1a',
+    border: '1px solid #3fb950',
+    color: '#3fb950',
+    borderRadius: 6,
+    padding: '6px 14px',
+    fontSize: 13,
+    cursor: 'pointer',
+  },
+  stopBtn: {
+    background: '#3b1219',
+    border: '1px solid #f85149',
+    color: '#f85149',
+    borderRadius: 6,
+    padding: '6px 14px',
+    fontSize: 13,
+    cursor: 'pointer',
+  },
+};

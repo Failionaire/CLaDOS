@@ -16,7 +16,10 @@ export function calculateCostUsd(
   inputTokens: number,
   outputTokens: number,
 ): number {
-  const price = MODEL_PRICES[model] ?? { input: 15.00, output: 75.00 };
+  const price = MODEL_PRICES[model];
+  if (!price) {
+    throw new Error(`Unknown model ID: "${model}" — add it to MODEL_PRICES in budget.ts`);
+  }
   return (inputTokens / 1_000_000) * price.input + (outputTokens / 1_000_000) * price.output;
 }
 
@@ -48,14 +51,18 @@ export class BudgetManager {
   /**
    * Pre-dispatch check: throws BudgetGate if the projected cost would breach the cap.
    * Never enforced mid-stream.
+   *
+   * State is re-read from disk on every call so that parallel dispatches (e.g.
+   * backend + frontend engineers) each see the latest spend total rather than
+   * sharing a stale snapshot captured before the first dispatch started.
    */
   async checkPreDispatch(
     projectDir: string,
     entry: AgentRegistryEntry,
     model: string,
     contextTokens: number,
-    state: SessionState,
   ): Promise<void> {
+    const state = await this.session.read(projectDir);
     const { spend_cap } = state.config;
     if (spend_cap === null) return;
 
@@ -71,6 +78,11 @@ export class BudgetManager {
   /**
    * Check whether the next summarizer call would push cumulative summarizer spend
    * past 5% of remaining budget. Returns false if the call should be skipped.
+   *
+   * NOTE: The caller is responsible for tracking and accumulating
+   * `cumulativeSummarizerCost` across all summarizer dispatches in the session.
+   * This value is not persisted here — the caller must read it from session state
+   * (or a local accumulator) and pass it consistently on every call.
    */
   checkSummarizerBudget(
     projectedSummarizerCost: number,
@@ -82,7 +94,8 @@ export class BudgetManager {
 
     const remaining = spend_cap - state.total_cost_usd;
     const cap = remaining * SUMMARIZER_BUDGET_CAP_FRACTION;
-    return cumulativeSummarizerCost + projectedSummarizerCost <= cap;
+    // Apply the same 20% margin used for agent dispatches for consistent accounting.
+    return cumulativeSummarizerCost + projectedSummarizerCost * BUDGET_MARGIN <= cap;
   }
 
   /**
@@ -104,9 +117,17 @@ export class BudgetManager {
   ): string {
     let total = 0;
     for (const entry of agents) {
-      const model = models[entry.role] ?? entry.default_model;
-      const ctx = contextTokens[entry.role] ?? 2000;
-      total += projectDispatchCost(entry, model, ctx);
+      const model = models[entry.role]!;
+      const ctx = contextTokens[entry.role];
+      if (ctx === undefined) {
+        // Context not yet available — omit this agent rather than use a
+        // placeholder that would misrepresent the estimate.
+        continue;
+      }
+      // Include system prompt tokens so the estimate matches the dispatch-path
+      // accounting, where system_prompt_tokens is always part of input cost.
+      const inputTokens = ctx + (entry.system_prompt_tokens ?? 0);
+      total += projectDispatchCost(entry, model, inputTokens);
     }
     return BudgetManager.formatEstimate(total);
   }

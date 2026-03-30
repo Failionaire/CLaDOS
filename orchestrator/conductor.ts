@@ -13,6 +13,7 @@ import type {
   AgentRegistryEntry,
   AgentDispatchConfig,
   AgentResult,
+  AgentRole,
   ContextArtifact,
   Finding,
   GateResponse,
@@ -29,7 +30,6 @@ import {
   injectVariables,
   validateSystemPromptSections,
   passesStructuralMarkerTest,
-  summarizeFile,
   estimateTokens,
 } from './context.js';
 import {
@@ -37,14 +37,11 @@ import {
   isAgentEnabled,
   isSkippable,
   OPUS_MODEL,
-  HAIKU_MODEL,
 } from './escalation.js';
 import writeFileAtomic from 'write-file-atomic';
 
 const CLADOS_ROOT = path.join(__dirname, '..');
 const REGISTRY_PATH = path.join(CLADOS_ROOT, 'agent-registry.json');
-const AGENTS_DIR = path.join(CLADOS_ROOT, 'agents');
-
 const RETRY_DELAYS_MS = [2_000, 8_000, 30_000];
 const MAX_RETRIES = 3;
 const UNRESOLVED_STREAK_REASON_THRESHOLD = 3;
@@ -60,7 +57,11 @@ function sanitizeJson(raw: string): unknown {
   const arrIdx = s.indexOf('[');
   if (objIdx === -1 && arrIdx === -1) throw new Error('No JSON object or array found');
   const start = objIdx !== -1 && (arrIdx === -1 || objIdx < arrIdx) ? objIdx : arrIdx;
-  s = s.slice(start);
+  // Slice to the last matching closing bracket to strip trailing prose after the JSON value
+  const closingChar = s.charAt(start) === '{' ? '}' : ']';
+  const end = s.lastIndexOf(closingChar);
+  if (end <= start) throw new Error('No closing bracket found for JSON value');
+  s = s.slice(start, end + 1);
   return JSON.parse(s);
 }
 
@@ -68,7 +69,8 @@ function sanitizeJson(raw: string): unknown {
 
 /** Derive the correct partial-file extension from the agent's expected output type. */
 function wipExtForRole(role: string): string {
-  const jsonRoles = new Set(['validator', 'qa', 'security', 'wrecker']);
+  // security writes security-report.md, not JSON — keep it out of jsonRoles
+  const jsonRoles = new Set(['validator', 'qa', 'wrecker']);
   return jsonRoles.has(role) ? '.partial.json' : '.partial.md';
 }
 
@@ -114,6 +116,10 @@ export class Conductor {
     this.tpmTracker = new RollingTpmTracker();
     this.budgetManager = new BudgetManager(session);
     this.broadcast = broadcast;
+  }
+
+  setBroadcast(fn: (event: WsServerEvent) => void): void {
+    this.broadcast = fn;
   }
 
   async init(): Promise<void> {
@@ -201,6 +207,19 @@ export class Conductor {
       }
     }
 
+    // M-11: Remove orphaned WIP partial files from previous crashed runs.
+    // Keep only the file matching the current in_progress_artifact_partial (if any).
+    const wipDir = path.join(projectDir, '.clados', 'wip');
+    if (fs.existsSync(wipDir)) {
+      const activePartial = state.phase_checkpoint?.in_progress_artifact_partial;
+      const activeBasename = activePartial ? path.basename(activePartial) : null;
+      for (const file of await fs.promises.readdir(wipDir)) {
+        if ((file.endsWith('.partial.md') || file.endsWith('.partial.json')) && file !== activeBasename) {
+          await fs.promises.unlink(path.join(wipDir, file)).catch(() => { /* ignore */ });
+        }
+      }
+    }
+
     for (let phase = state.current_phase; phase <= 4; phase++) {
       // Skip already-completed phases
       if (state.phases_completed.includes(phase)) continue;
@@ -226,36 +245,50 @@ export class Conductor {
   private async runPhase0(projectDir: string): Promise<void> {
     const state = await this.session.read(projectDir);
 
+    // On crash recovery, preserve completed_agents, gate_revision_count, and
+    // unresolved_streak so agents that finished aren't re-run and the escape
+    // hatch streak counter isn't reset mid-revision-cycle.
+    const isSamePhaseRecovery = state.phase_checkpoint?.phase === 0;
+    const priorCompleted = isSamePhaseRecovery
+      ? new Set(state.phase_checkpoint!.completed_agents)
+      : new Set<string>();
+    const priorRevisionCount = isSamePhaseRecovery ? state.phase_checkpoint!.gate_revision_count : 0;
+    const priorUnresolvedStreak = isSamePhaseRecovery ? state.phase_checkpoint!.unresolved_streak : 0;
+
     await this.session.update(projectDir, {
       current_phase: 0,
       phase_checkpoint: {
         phase: 0,
-        completed_agents: [],
+        completed_agents: [...priorCompleted],
         in_progress_agent: null,
         in_progress_artifact_partial: null,
         spec_version_at_start: state.spec_version,
-        gate_revision_count: 0,
-        unresolved_streak: 0,
+        gate_revision_count: priorRevisionCount,
+        unresolved_streak: priorUnresolvedStreak,
       },
     });
 
     // PM: concept document
-    await this.dispatchAgent({
-      role: 'pm',
-      phase: 0,
-      projectDir,
-      contextArtifacts: [],
-      contextPrefix: `The user's project idea:\n\n${state.config.idea}\n\nProject type: ${state.config.project_type}\n\nWrite the one-page concept document (00-concept.md) for this project.`,
-    });
+    if (!priorCompleted.has('pm')) {
+      await this.dispatchAgent({
+        role: 'pm',
+        phase: 0,
+        projectDir,
+        contextArtifacts: [],
+        contextPrefix: `The user's project idea:\n\n${state.config.idea}\n\nProject type: ${state.config.project_type}\n\nWrite the one-page concept document (00-concept.md) for this project.`,
+      });
+    }
 
     // Validator: review concept
-    await this.dispatchAgent({
-      role: 'validator',
-      phase: 0,
-      projectDir,
-      contextArtifacts: [{ artifact: '00-concept.md', type: 'required' }],
-      contextPrefix: 'Review the concept for feasibility and obvious gaps. Write your findings to 00-validator.json.',
-    });
+    if (!priorCompleted.has('validator')) {
+      await this.dispatchAgent({
+        role: 'validator',
+        phase: 0,
+        projectDir,
+        contextArtifacts: [{ artifact: '00-concept.md', type: 'required' }],
+        contextPrefix: 'Review the concept for feasibility and obvious gaps. Write your findings to 00-validator.json.',
+      });
+    }
 
     await this.openGate(projectDir, 0, 1, ['00-concept.md', '00-validator.json']);
   }
@@ -265,70 +298,88 @@ export class Conductor {
   private async runPhase1(projectDir: string): Promise<void> {
     const state = await this.session.read(projectDir);
 
+    // On crash recovery, preserve completed_agents, gate_revision_count, and
+    // unresolved_streak so agents that finished aren't re-run and the escape
+    // hatch streak counter isn't reset mid-revision-cycle.
+    const isSamePhaseRecovery = state.phase_checkpoint?.phase === 1;
+    const priorCompleted = isSamePhaseRecovery
+      ? new Set(state.phase_checkpoint!.completed_agents)
+      : new Set<string>();
+    const priorRevisionCount = isSamePhaseRecovery ? state.phase_checkpoint!.gate_revision_count : 0;
+    const priorUnresolvedStreak = isSamePhaseRecovery ? state.phase_checkpoint!.unresolved_streak : 0;
+
     await this.session.update(projectDir, {
       current_phase: 1,
       phase_checkpoint: {
         phase: 1,
-        completed_agents: [],
+        completed_agents: [...priorCompleted],
         in_progress_agent: null,
         in_progress_artifact_partial: null,
         spec_version_at_start: state.spec_version,
-        gate_revision_count: 0,
-        unresolved_streak: 0,
+        gate_revision_count: priorRevisionCount,
+        unresolved_streak: priorUnresolvedStreak,
       },
     });
 
     // PM: full PRD
-    await this.dispatchAgent({
-      role: 'pm',
-      phase: 1,
-      projectDir,
-      contextArtifacts: [
-        { artifact: '00-concept.md', type: 'required' },
-        { artifact: '00-validator.json', type: 'reference' },
-      ],
-      contextPrefix: 'Expand the approved concept into a full PRD with user stories, acceptance criteria, and non-functional requirements. Write to 01-prd.md.',
-    });
+    if (!priorCompleted.has('pm')) {
+      await this.dispatchAgent({
+        role: 'pm',
+        phase: 1,
+        projectDir,
+        contextArtifacts: [
+          { artifact: '00-concept.md', type: 'required' },
+          { artifact: '00-validator.json', type: 'reference' },
+        ],
+        contextPrefix: 'Expand the approved concept into a full PRD with user stories, acceptance criteria, and non-functional requirements. Write to 01-prd.md.',
+      });
+    }
 
     // Architect: project skeleton
-    await this.dispatchAgent({
-      role: 'architect',
-      phase: 1,
-      projectDir,
-      contextArtifacts: [
-        { artifact: '01-prd.md', type: 'required' },
-        { artifact: '00-concept.md', type: 'reference' },
-      ],
-      contextPrefix: 'Define the project skeleton, tech stack, dependency list, database schema, and OpenAPI spec. Write to 01-architecture.md, 01-api-spec.yaml, and 01-schema.yaml.',
-    });
+    if (!priorCompleted.has('architect')) {
+      await this.dispatchAgent({
+        role: 'architect',
+        phase: 1,
+        projectDir,
+        contextArtifacts: [
+          { artifact: '01-prd.md', type: 'required' },
+          { artifact: '00-concept.md', type: 'reference' },
+        ],
+        contextPrefix: 'Define the project skeleton, tech stack, dependency list, database schema, and OpenAPI spec. Write to 01-architecture.md, 01-api-spec.yaml, and 01-schema.yaml.',
+      });
+    }
 
     // Engineer: scaffold
-    await this.dispatchAgent({
-      role: 'engineer',
-      phase: 1,
-      projectDir,
-      contextArtifacts: [
-        { artifact: '01-prd.md', type: 'required' },
-        { artifact: '01-architecture.md', type: 'required' },
-        { artifact: '01-api-spec.yaml', type: 'required' },
-        { artifact: '01-schema.yaml', type: 'required' },
-      ],
-      contextPrefix: 'Scaffold database models and the core server skeleton into src/. Generate infra/docker-compose.test.yml and .env.test. This is real code, not pseudocode.',
-    });
+    if (!priorCompleted.has('engineer')) {
+      await this.dispatchAgent({
+        role: 'engineer',
+        phase: 1,
+        projectDir,
+        contextArtifacts: [
+          { artifact: '01-prd.md', type: 'required' },
+          { artifact: '01-architecture.md', type: 'required' },
+          { artifact: '01-api-spec.yaml', type: 'required' },
+          { artifact: '01-schema.yaml', type: 'required' },
+        ],
+        contextPrefix: 'Scaffold database models and the core server skeleton into src/. Generate infra/docker-compose.test.yml and .env.test. This is real code, not pseudocode.',
+      });
+    }
 
     // Validator
-    await this.dispatchAgent({
-      role: 'validator',
-      phase: 1,
-      projectDir,
-      contextArtifacts: [
-        { artifact: '01-prd.md', type: 'required' },
-        { artifact: '01-architecture.md', type: 'required' },
-        { artifact: '01-api-spec.yaml', type: 'reference' },
-        { artifact: '01-schema.yaml', type: 'reference' },
-      ],
-      contextPrefix: 'Validate the architecture artifacts and scaffold. Write findings to 01-validator.json.',
-    });
+    if (!priorCompleted.has('validator')) {
+      await this.dispatchAgent({
+        role: 'validator',
+        phase: 1,
+        projectDir,
+        contextArtifacts: [
+          { artifact: '01-prd.md', type: 'required' },
+          { artifact: '01-architecture.md', type: 'required' },
+          { artifact: '01-api-spec.yaml', type: 'reference' },
+          { artifact: '01-schema.yaml', type: 'reference' },
+        ],
+        contextPrefix: 'Validate the architecture artifacts and scaffold. Write findings to 01-validator.json.',
+      });
+    }
 
     await this.openGate(projectDir, 1, 2, [
       '01-prd.md', '01-architecture.md', '01-api-spec.yaml', '01-schema.yaml', '01-validator.json',
@@ -341,16 +392,26 @@ export class Conductor {
     const state = await this.session.read(projectDir);
     const claDosDir = path.join(projectDir, '.clados');
 
+    // On crash recovery, preserve completed_agents, gate_revision_count, and
+    // unresolved_streak so agents that finished aren't re-run and the escape
+    // hatch streak counter isn't reset mid-revision-cycle.
+    const isSamePhaseRecovery = state.phase_checkpoint?.phase === 2;
+    const priorCompleted = isSamePhaseRecovery
+      ? new Set(state.phase_checkpoint!.completed_agents)
+      : new Set<string>();
+    const priorRevisionCount = isSamePhaseRecovery ? state.phase_checkpoint!.gate_revision_count : 0;
+    const priorUnresolvedStreak = isSamePhaseRecovery ? state.phase_checkpoint!.unresolved_streak : 0;
+
     await this.session.update(projectDir, {
       current_phase: 2,
       phase_checkpoint: {
         phase: 2,
-        completed_agents: [],
+        completed_agents: [...priorCompleted],
         in_progress_agent: null,
         in_progress_artifact_partial: null,
         spec_version_at_start: state.spec_version,
-        gate_revision_count: 0,
-        unresolved_streak: 0,
+        gate_revision_count: priorRevisionCount,
+        unresolved_streak: priorUnresolvedStreak,
       },
     });
 
@@ -358,9 +419,43 @@ export class Conductor {
 
     // Stage A — Implementation
     if (isFullStack) {
-      // Backend and frontend engineers run in parallel
-      await Promise.all([
-        this.dispatchAgent({
+      // Backend and frontend engineers run in parallel; skip any already completed
+      const needsBackend = !priorCompleted.has('engineer-backend');
+      const needsFrontend = !priorCompleted.has('engineer-frontend');
+      if (needsBackend || needsFrontend) {
+        await Promise.all([
+          needsBackend ? this.dispatchAgent({
+            role: 'engineer',
+            phase: 2,
+            projectDir,
+            contextArtifacts: [
+              { artifact: '01-prd.md', type: 'required' },
+              { artifact: '01-architecture.md', type: 'required' },
+              { artifact: '01-api-spec.yaml', type: 'required' },
+              { artifact: '01-schema.yaml', type: 'required' },
+            ],
+            contextPrefix: 'You are building the BACKEND. Pass 1: emit 02-build/backend-engineer-manifest.json. Pass 2: implement in batches. Pass 3: emit 02-build/test-context.json.',
+            variables: { project_type: state.config.project_type, engineer_role: 'backend' },
+            errorKey: 'engineer-backend',
+          }) : Promise.resolve(),
+          needsFrontend ? this.dispatchAgent({
+            role: 'engineer',
+            phase: 2,
+            projectDir,
+            contextArtifacts: [
+              { artifact: '01-prd.md', type: 'required' },
+              { artifact: '01-architecture.md', type: 'required' },
+              { artifact: '01-api-spec.yaml', type: 'required' },
+            ],
+            contextPrefix: 'You are building the FRONTEND. Pass 1: emit 02-build/frontend-engineer-manifest.json. Pass 2: implement in batches using the OpenAPI spec as the backend contract.',
+            variables: { project_type: state.config.project_type, engineer_role: 'frontend' },
+            errorKey: 'engineer-frontend',
+          }) : Promise.resolve(),
+        ]);
+      }
+    } else {
+      if (!priorCompleted.has('engineer')) {
+        await this.dispatchAgent({
           role: 'engineer',
           phase: 2,
           projectDir,
@@ -370,11 +465,29 @@ export class Conductor {
             { artifact: '01-api-spec.yaml', type: 'required' },
             { artifact: '01-schema.yaml', type: 'required' },
           ],
-          contextPrefix: 'You are building the BACKEND. Pass 1: emit 02-build/backend-engineer-manifest.json. Pass 2: implement in batches. Pass 3: emit 02-build/test-context.json.',
-          variables: { project_type: state.config.project_type, engineer_role: 'backend' },
-          errorKey: 'engineer-backend',
-        }),
-        this.dispatchAgent({
+          contextPrefix: 'Pass 1: emit 02-build/backend-engineer-manifest.json. Pass 2: implement in batches. Pass 3: emit 02-build/test-context.json.',
+          variables: { project_type: state.config.project_type },
+        });
+      }
+    }
+
+    // L-3: Check for spec_version drift during the engineer run.
+    // If the API spec was bumped (either engineer modified it), log and note that
+    // the contract validator re-run in Stage B is warranted.
+    // L-3: Check for spec_version drift during the parallel engineer run.
+    // For full-stack projects: the frontend engineer ran concurrently with the backend and
+    // may have built against a stale API spec. Re-run it now with the updated spec so Stage B
+    // contract validation reflects both engineers' full intent.
+    // For single-engineer projects: a spec bump is unusual but possible (e.g. from read→revise
+    // loops); log it and let the always-running contract validator catch any mismatches.
+    const stateAfterEngineers = await this.session.read(projectDir);
+    if (stateAfterEngineers.spec_version !== state.spec_version) {
+      if (isFullStack) {
+        this.logger.warn(
+          'spec_version.diverged',
+          `API spec changed during parallel engineer run (${state.spec_version} → ${stateAfterEngineers.spec_version}) — re-running frontend engineer against updated spec`,
+        );
+        await this.dispatchAgent({
           role: 'engineer',
           phase: 2,
           projectDir,
@@ -383,25 +496,16 @@ export class Conductor {
             { artifact: '01-architecture.md', type: 'required' },
             { artifact: '01-api-spec.yaml', type: 'required' },
           ],
-          contextPrefix: 'You are building the FRONTEND. Pass 1: emit 02-build/frontend-engineer-manifest.json. Pass 2: implement in batches using the OpenAPI spec as the backend contract.',
+          contextPrefix: 'The backend engineer updated 01-api-spec.yaml while you were running in parallel. Re-read the updated spec and revise your frontend implementation: update API call sites, request/response type definitions, and any endpoints that changed or were added. Do not change existing working code unrelated to the spec change.',
           variables: { project_type: state.config.project_type, engineer_role: 'frontend' },
           errorKey: 'engineer-frontend',
-        }),
-      ]);
-    } else {
-      await this.dispatchAgent({
-        role: 'engineer',
-        phase: 2,
-        projectDir,
-        contextArtifacts: [
-          { artifact: '01-prd.md', type: 'required' },
-          { artifact: '01-architecture.md', type: 'required' },
-          { artifact: '01-api-spec.yaml', type: 'required' },
-          { artifact: '01-schema.yaml', type: 'required' },
-        ],
-        contextPrefix: 'Pass 1: emit 02-build/backend-engineer-manifest.json. Pass 2: implement in batches. Pass 3: emit 02-build/test-context.json.',
-        variables: { project_type: state.config.project_type },
-      });
+        });
+      } else {
+        this.logger.info(
+          'spec_version.diverged',
+          `API spec version changed during Phase 2 engineer run (${state.spec_version} → ${stateAfterEngineers.spec_version}) — contract validator re-run in Stage B is warranted`,
+        );
+      }
     }
 
     // Verify test-context.json exists before dispatching QA
@@ -424,28 +528,31 @@ export class Conductor {
     const wreckerEnabled = isAgentEnabled(wreckerEntry.enabled_when, state.config);
 
     await Promise.all([
-      // Contract Validator (automated — not guarded by semaphore)
+      // Contract Validator (automated — not guarded by semaphore; always re-run, deterministic)
       runContractValidator(projectDir, specPath, entryFile),
 
-      // QA → TestRunner (sequential pair)
-      this.dispatchAgent({
-        role: 'qa',
-        phase: 2,
-        projectDir,
-        // QA: asymmetric context — NO src/, NO schema
-        contextArtifacts: [
-          { artifact: '01-prd.md', type: 'required' },
-          { artifact: '01-api-spec.yaml', type: 'required' },
-          { artifact: '02-build/test-context.json', type: 'required' },
-        ],
-        contextPrefix: 'Write the test suite as specified. Do NOT read src/ or 01-schema.yaml. You have no access to the implementation.',
-        variables: { project_type: state.config.project_type },
-      }).then(async () => {
-        return runTestRunner(projectDir);
-      }),
+      // QA → TestRunner (sequential pair; skip QA dispatch if already completed)
+      priorCompleted.has('qa')
+        ? runTestRunner(projectDir)
+        : this.dispatchAgent({
+            role: 'qa',
+            phase: 2,
+            projectDir,
+            // QA: asymmetric context — NO src/, NO schema
+            contextArtifacts: [
+              { artifact: '01-prd.md', type: 'required' },
+              { artifact: '01-api-spec.yaml', type: 'required' },
+              { artifact: '02-build/test-context.json', type: 'required' },
+            ],
+            contextPrefix: 'Write the test suite as specified. Do NOT read src/ or 01-schema.yaml. You have no access to the implementation.',
+            variables: { project_type: state.config.project_type },
+            deniedPrefixes: ['src', '.clados/01-schema.yaml'],
+          }).then(async () => {
+            return runTestRunner(projectDir);
+          }),
 
       // Security (if enabled) — runs parallel to QA
-      securityEnabled
+      securityEnabled && !priorCompleted.has('security')
         ? this.dispatchAgent({
             role: 'security',
             phase: 2,
@@ -460,7 +567,7 @@ export class Conductor {
     ]);
 
     // Stage C — Wrecker (if enabled), then Validator
-    if (wreckerEnabled) {
+    if (wreckerEnabled && !priorCompleted.has('wrecker')) {
       await this.dispatchAgent({
         role: 'wrecker',
         phase: 2,
@@ -488,19 +595,24 @@ export class Conductor {
       validatorArtifacts.push({ artifact: '02-build/wrecker.json', type: 'reference' });
     }
 
-    await this.dispatchAgent({
-      role: 'validator',
-      phase: 2,
-      projectDir,
-      contextArtifacts: validatorArtifacts,
-      contextPrefix: 'Review all build artifacts, test results, and contract findings. Write your findings to 02-build/validator.json.',
-    });
+    if (!priorCompleted.has('validator')) {
+      await this.dispatchAgent({
+        role: 'validator',
+        phase: 2,
+        projectDir,
+        contextArtifacts: validatorArtifacts,
+        contextPrefix: 'Review all build artifacts, test results, and contract findings. Write your findings to 02-build/validator.json.',
+      });
+    }
 
     const gateArtifacts = [
       '02-build/backend-engineer-manifest.json',
       ...(isFullStack ? ['02-build/frontend-engineer-manifest.json'] : []),
       '02-build/contract-validator.json',
       '02-build/test-runner.json',
+      // Include optional agent reports so the human can review them at the gate
+      ...(securityEnabled ? ['02-build/security-report.md'] : []),
+      ...(wreckerEnabled ? ['02-build/wrecker.json'] : []),
       '02-build/validator.json',
     ];
     await this.openGate(projectDir, 2, 3, gateArtifacts);
@@ -511,56 +623,74 @@ export class Conductor {
   private async runPhase3(projectDir: string): Promise<void> {
     const state = await this.session.read(projectDir);
 
+    // On crash recovery, preserve completed_agents, gate_revision_count, and
+    // unresolved_streak so agents that finished aren't re-run and the escape
+    // hatch streak counter isn't reset mid-revision-cycle.
+    const isSamePhaseRecovery = state.phase_checkpoint?.phase === 3;
+    const priorCompleted = isSamePhaseRecovery
+      ? new Set(state.phase_checkpoint!.completed_agents)
+      : new Set<string>();
+    const priorRevisionCount = isSamePhaseRecovery ? state.phase_checkpoint!.gate_revision_count : 0;
+    const priorUnresolvedStreak = isSamePhaseRecovery ? state.phase_checkpoint!.unresolved_streak : 0;
+
     await this.session.update(projectDir, {
       current_phase: 3,
       phase_checkpoint: {
         phase: 3,
-        completed_agents: [],
+        completed_agents: [...priorCompleted],
         in_progress_agent: null,
         in_progress_artifact_partial: null,
         spec_version_at_start: state.spec_version,
-        gate_revision_count: 0,
-        unresolved_streak: 0,
+        gate_revision_count: priorRevisionCount,
+        unresolved_streak: priorUnresolvedStreak,
       },
     });
 
     // Docs agent
-    await this.dispatchAgent({
-      role: 'docs',
-      phase: 3,
-      projectDir,
-      contextArtifacts: [
-        { artifact: '01-prd.md', type: 'reference' },
-        { artifact: '01-api-spec.yaml', type: 'reference' },
-        { artifact: '02-build/test-runner.json', type: 'reference' },
-      ],
-      contextPrefix: 'Write README, changelog, and runbook based on the actual functioning codebase. Read src/ and tests/ via read_file as needed. Write to docs/.',
-      variables: { project_type: state.config.project_type },
-    });
+    if (!priorCompleted.has('docs')) {
+      await this.dispatchAgent({
+        role: 'docs',
+        phase: 3,
+        projectDir,
+        contextArtifacts: [
+          { artifact: '01-prd.md', type: 'reference' },
+          { artifact: '01-api-spec.yaml', type: 'reference' },
+          { artifact: '02-build/test-runner.json', type: 'reference' },
+        ],
+        contextPrefix: 'Write README, changelog, and runbook based on the actual functioning codebase. Read src/ and tests/ via read_file as needed. Write to docs/.',
+        variables: { project_type: state.config.project_type },
+      });
+    }
 
-    // PM: final PRD and canonical API spec
-    await this.dispatchAgent({
-      role: 'pm',
-      phase: 3,
-      projectDir,
-      contextArtifacts: [
-        { artifact: '01-prd.md', type: 'reference' },
-        { artifact: '01-api-spec.yaml', type: 'reference' },
-      ],
-      contextPrefix: 'Write the final PRD (03-prd.md) and produce 03-api-spec.yaml as the canonical record of the API as actually built. Read src/ via read_file to verify what was actually implemented.',
-    });
+    // PM: final PRD and canonical API spec.
+    // Bug 2 fix: 03-api-spec-draft.yaml never exists; PM derives the final spec by reading src/.
+    if (!priorCompleted.has('pm')) {
+      await this.dispatchAgent({
+        role: 'pm',
+        phase: 3,
+        projectDir,
+        contextArtifacts: [
+          { artifact: '01-prd.md', type: 'required' },
+          { artifact: '01-api-spec.yaml', type: 'required' },
+          { artifact: '02-build/test-runner.json', type: 'reference' },
+        ],
+        contextPrefix: 'Write the final PRD (03-prd.md). Then produce 03-api-spec.yaml as the canonical record of the API as actually built — use read_file to inspect src/ routes and verify each endpoint against the original 01-api-spec.yaml. Preserve 01-api-spec.yaml unchanged.',
+      });
+    }
 
     // Validator
-    await this.dispatchAgent({
-      role: 'validator',
-      phase: 3,
-      projectDir,
-      contextArtifacts: [
-        { artifact: '03-prd.md', type: 'required' },
-        { artifact: '03-api-spec.yaml', type: 'required' },
-      ],
-      contextPrefix: 'Review documentation for accuracy against the code. Write findings to 03-validator.json.',
-    });
+    if (!priorCompleted.has('validator')) {
+      await this.dispatchAgent({
+        role: 'validator',
+        phase: 3,
+        projectDir,
+        contextArtifacts: [
+          { artifact: '03-prd.md', type: 'required' },
+          { artifact: '03-api-spec.yaml', type: 'required' },
+        ],
+        contextPrefix: 'Review documentation for accuracy against the code. Write findings to 03-validator.json.',
+      });
+    }
 
     await this.openGate(projectDir, 3, 4, ['03-prd.md', '03-api-spec.yaml', '03-validator.json']);
   }
@@ -570,43 +700,57 @@ export class Conductor {
   private async runPhase4(projectDir: string): Promise<void> {
     const state = await this.session.read(projectDir);
 
+    // On crash recovery, preserve completed_agents, gate_revision_count, and
+    // unresolved_streak so agents that finished aren't re-run and the escape
+    // hatch streak counter isn't reset mid-revision-cycle.
+    const isSamePhaseRecovery = state.phase_checkpoint?.phase === 4;
+    const priorCompleted = isSamePhaseRecovery
+      ? new Set(state.phase_checkpoint!.completed_agents)
+      : new Set<string>();
+    const priorRevisionCount = isSamePhaseRecovery ? state.phase_checkpoint!.gate_revision_count : 0;
+    const priorUnresolvedStreak = isSamePhaseRecovery ? state.phase_checkpoint!.unresolved_streak : 0;
+
     await this.session.update(projectDir, {
       current_phase: 4,
       phase_checkpoint: {
         phase: 4,
-        completed_agents: [],
+        completed_agents: [...priorCompleted],
         in_progress_agent: null,
         in_progress_artifact_partial: null,
         spec_version_at_start: state.spec_version,
-        gate_revision_count: 0,
-        unresolved_streak: 0,
+        gate_revision_count: priorRevisionCount,
+        unresolved_streak: priorUnresolvedStreak,
       },
     });
 
-    await this.dispatchAgent({
-      role: 'devops',
-      phase: 4,
-      projectDir,
-      contextArtifacts: [
-        { artifact: '01-architecture.md', type: 'reference' },
-        { artifact: '03-prd.md', type: 'reference' },
-        { artifact: '03-api-spec.yaml', type: 'reference' },
-      ],
-      contextPrefix: 'Generate Dockerfiles, CI/CD configuration, environment config, and deployment runbook. Write to infra/ and docs/runbook.md.',
-      variables: { project_type: state.config.project_type },
-    });
+    if (!priorCompleted.has('devops')) {
+      await this.dispatchAgent({
+        role: 'devops',
+        phase: 4,
+        projectDir,
+        contextArtifacts: [
+          { artifact: '01-architecture.md', type: 'reference' },
+          { artifact: '03-prd.md', type: 'reference' },
+          { artifact: '03-api-spec.yaml', type: 'reference' },
+        ],
+        contextPrefix: 'Generate Dockerfiles, CI/CD configuration, environment config, and deployment runbook. Write to infra/ and docs/runbook.md.',
+        variables: { project_type: state.config.project_type },
+      });
+    }
 
-    await this.dispatchAgent({
-      role: 'validator',
-      phase: 4,
-      projectDir,
-      contextArtifacts: [
-        { artifact: '01-architecture.md', type: 'reference' },
-      ],
-      contextPrefix: 'Review the deployment configuration for security and completeness. ' +
-        'Read infra/ and docs/runbook.md via read_file to inspect the generated Dockerfiles, ' +
-        'CI/CD config, and runbook. Write findings to 04-validator.json.',
-    });
+    if (!priorCompleted.has('validator')) {
+      await this.dispatchAgent({
+        role: 'validator',
+        phase: 4,
+        projectDir,
+        contextArtifacts: [
+          { artifact: '01-architecture.md', type: 'reference' },
+        ],
+        contextPrefix: 'Review the deployment configuration for security and completeness. ' +
+          'Read infra/ and docs/runbook.md via read_file to inspect the generated Dockerfiles, ' +
+          'CI/CD config, and runbook. Write findings to 04-validator.json.',
+      });
+    }
 
     await this.openGate(projectDir, 4, 5, [
       '04-validator.json',
@@ -616,6 +760,23 @@ export class Conductor {
   }
 
   // ─── Gate logic ─────────────────────────────────────────────────────────────
+
+  /** Compute the cost estimate string for the next phase. Shared by openGate and openGateTerminal. */
+  private estimateNextPhaseCost(phase: number, state: SessionState, revisionCount: number): string {
+    const nextPhaseAgents = this.getPhaseAgents(phase + 1, state.config);
+    return BudgetManager.estimateNextPhase(
+      nextPhaseAgents,
+      Object.fromEntries(nextPhaseAgents.map((a) => [a.role, resolveModel(a.default_model, a.escalation_model, revisionCount, state.config.is_high_complexity)])),
+      // M-15: use stored artifact token counts instead of hardcoded 2000
+      Object.fromEntries(nextPhaseAgents.map((a) => {
+        const totalTokens = (a.context_artifacts ?? []).reduce((sum, art) => {
+          const record = state.artifacts?.[art.artifact];
+          return sum + (record?.token_count ?? 500);
+        }, 0);
+        return [a.role, totalTokens || 2000];
+      })),
+    );
+  }
 
   private async openGate(
     projectDir: string,
@@ -630,13 +791,7 @@ export class Conductor {
     // Load findings from the Validator output for this phase
     const findings = await this.loadValidatorFindings(claDosDir, phase);
 
-    // Estimate next phase cost
-    const nextPhaseAgents = this.getPhaseAgents(phase + 1, state.config);
-    const nextPhaseCostEstimate = BudgetManager.estimateNextPhase(
-      nextPhaseAgents,
-      Object.fromEntries(nextPhaseAgents.map((a) => [a.role, resolveModel(a.default_model, a.escalation_model, checkpoint.gate_revision_count, state.config.is_high_complexity)])),
-      Object.fromEntries(nextPhaseAgents.map((a) => [a.role, 2000])),
-    );
+    const nextPhaseCostEstimate = this.estimateNextPhaseCost(phase, state, checkpoint.gate_revision_count);
 
     await this.session.update(projectDir, { pipeline_status: 'gate_pending' });
 
@@ -652,35 +807,67 @@ export class Conductor {
 
     this.logger.info('gate.open', `Gate ${gateNumber} open — waiting for human decision`);
 
-    // Wait for human
-    const response = await this.waitForGate(projectDir);
+    // Wait for human — loop until the gate is definitively resolved.
+    // A blocked approve (unoverridden must_fix findings) re-broadcasts the gate
+    // and re-waits rather than silently advancing the pipeline.
+    for (;;) {
+      const response = await this.waitForGate(projectDir);
 
-    switch (response.action) {
-      case 'approve':
-        await this.handleGateApprove(projectDir, phase, response);
-        break;
+      switch (response.action) {
+        case 'approve': {
+          const approved = await this.handleGateApprove(projectDir, phase, response);
+          if (approved) return;
+          // Blocked — re-broadcast so the client knows the gate is still open
+          this.broadcast({
+            type: 'gate:open',
+            phase,
+            gate_number: gateNumber,
+            artifacts: artifactKeys,
+            findings,
+            revision_count: checkpoint.gate_revision_count,
+            next_phase_cost_estimate: nextPhaseCostEstimate,
+          });
+          break;
+        }
 
-      case 'revise':
-        await this.handleGateRevise(projectDir, phase, gateNumber, artifactKeys, response);
-        break;
+        case 'revise':
+          await this.handleGateRevise(projectDir, phase, gateNumber, artifactKeys, response);
+          return;
 
-      case 'abort':
-        await this.session.update(projectDir, { pipeline_status: 'abandoned' });
-        this.logger.info('gate.abandoned', 'Project abandoned at gate');
-        throw new Error('PIPELINE_ABANDONED');
+        case 'abort':
+          await this.session.update(projectDir, { pipeline_status: 'abandoned' });
+          this.logger.info('gate.abandoned', 'Project abandoned at gate');
+          throw new Error('PIPELINE_ABANDONED');
 
-      case 'goto':
-        await this.handleGateGoto(projectDir, phase, response.goto_gate ?? 0);
-        throw new Error(`GOTO_PHASE_${response.goto_gate ?? 0}`);
+        case 'goto':
+          await this.handleGateGoto(projectDir, phase, response.goto_gate);
+          throw new Error(`GOTO_PHASE_${response.goto_gate}`);
+      }
     }
   }
 
   private async handleGateApprove(
     projectDir: string,
     phase: number,
-    response: GateResponse,
-  ): Promise<void> {
+    response: Extract<GateResponse, { action: 'approve' }>,
+  ): Promise<boolean> {
     const state = await this.session.read(projectDir);
+    const claDosDir = path.join(projectDir, '.clados');
+
+    // Server-side enforcement: cannot approve with unoverridden must_fix findings
+    const findings = await this.loadValidatorFindings(claDosDir, phase);
+    const mustFix = findings.filter((f) => f.severity === 'must_fix' && f.status !== 'resolved');
+    const overridden = new Set(response.override_findings ?? []);
+    const unaddressed = mustFix.filter((f) => !overridden.has(f.id));
+    if (unaddressed.length > 0) {
+      this.logger.warn(
+        'gate.approve_blocked',
+        `Approve rejected: ${unaddressed.length} must_fix finding(s) not overridden at phase ${phase}`,
+      );
+      // Re-open the gate rather than silently advancing
+      await this.session.update(projectDir, { pipeline_status: 'gate_pending' });
+      return false;
+    }
 
     // Handle overridden findings
     if (response.override_findings && response.override_findings.length > 0) {
@@ -702,6 +889,7 @@ export class Conductor {
         unresolved_streak: 0,
       },
     });
+    return true;
   }
 
   private async handleGateRevise(
@@ -709,7 +897,7 @@ export class Conductor {
     phase: number,
     gateNumber: number,
     artifactKeys: string[],
-    response: GateResponse,
+    response: Extract<GateResponse, { action: 'revise' }>,
   ): Promise<void> {
     const state = await this.session.read(projectDir);
     const checkpoint = state.phase_checkpoint!;
@@ -730,7 +918,7 @@ export class Conductor {
     if (checkpoint.unresolved_streak === UNRESOLVED_STREAK_REASON_THRESHOLD) {
       // First time hitting the threshold: call conductor.reason() to log guidance.
       // If the API fails, log and proceed with the revision anyway.
-      const reasoned = await this.conductorReason(projectDir, phase, checkpoint, response.revision_text ?? '')
+      const reasoned = await this.conductorReason(projectDir, phase, checkpoint, response.revision_text)
         .catch((err) => {
           this.logger.warn('conductor.reason_failed', String(err));
           return false;
@@ -746,7 +934,7 @@ export class Conductor {
 
     // Re-run the phase
     await this.session.update(projectDir, { pipeline_status: 'agent_running' });
-    await this.runPhaseRevision(projectDir, phase, response.revision_text ?? '', conductorGuidance);
+    await this.runPhaseRevision(projectDir, phase, response.revision_text, conductorGuidance);
 
     // Re-open gate after revision
     await this.openGate(projectDir, phase, gateNumber, artifactKeys);
@@ -767,6 +955,8 @@ export class Conductor {
   ): Promise<void> {
     const claDosDir = path.join(projectDir, '.clados');
     const findings = await this.loadValidatorFindings(claDosDir, phase);
+    const state = await this.session.read(projectDir);
+    const nextPhaseCostEstimate = this.estimateNextPhaseCost(phase, state, revisionCount);
 
     await this.session.update(projectDir, { pipeline_status: 'gate_pending' });
     this.broadcast({
@@ -776,7 +966,7 @@ export class Conductor {
       artifacts: artifactKeys,
       findings,
       revision_count: revisionCount,
-      next_phase_cost_estimate: '~$0.00',
+      next_phase_cost_estimate: nextPhaseCostEstimate,
     });
 
     this.logger.warn(
@@ -784,23 +974,36 @@ export class Conductor {
       `Three guided revisions have not resolved must-fix findings at Phase ${phase}. Human decision required.`,
     );
 
-    const humanResponse = await this.waitForGate(projectDir);
+    for (;;) {
+      const humanResponse = await this.waitForGate(projectDir);
 
-    switch (humanResponse.action) {
-      case 'approve':
-        await this.handleGateApprove(projectDir, phase, humanResponse);
-        break;
-      case 'revise':
-        await this.session.update(projectDir, { pipeline_status: 'agent_running' });
-        await this.runPhaseRevision(projectDir, phase, humanResponse.revision_text ?? '', '');
-        await this.openGate(projectDir, phase, gateNumber, artifactKeys);
-        break;
-      case 'abort':
-        await this.session.update(projectDir, { pipeline_status: 'abandoned' });
-        throw new Error('PIPELINE_ABANDONED');
-      case 'goto':
-        await this.handleGateGoto(projectDir, phase, humanResponse.goto_gate ?? 0);
-        throw new Error(`GOTO_PHASE_${humanResponse.goto_gate ?? 0}`);
+      switch (humanResponse.action) {
+        case 'approve': {
+          const approved = await this.handleGateApprove(projectDir, phase, humanResponse);
+          if (approved) return;
+          this.broadcast({
+            type: 'gate:open',
+            phase,
+            gate_number: gateNumber,
+            artifacts: artifactKeys,
+            findings,
+            revision_count: revisionCount,
+            next_phase_cost_estimate: nextPhaseCostEstimate,
+          });
+          break;
+        }
+        case 'revise':
+          await this.session.update(projectDir, { pipeline_status: 'agent_running' });
+          await this.runPhaseRevision(projectDir, phase, humanResponse.revision_text, '');
+          await this.openGate(projectDir, phase, gateNumber, artifactKeys);
+          return;
+        case 'abort':
+          await this.session.update(projectDir, { pipeline_status: 'abandoned' });
+          throw new Error('PIPELINE_ABANDONED');
+        case 'goto':
+          await this.handleGateGoto(projectDir, phase, humanResponse.goto_gate);
+          throw new Error(`GOTO_PHASE_${humanResponse.goto_gate}`);
+      }
     }
   }
 
@@ -819,6 +1022,8 @@ export class Conductor {
       const src = path.join(projectDir, dir);
       if (fs.existsSync(src)) {
         await fs.promises.cp(src, path.join(historyDir, dir), { recursive: true });
+        // Remove so re-run from scaffold doesn't pick up stale phase code
+        await fs.promises.rm(src, { recursive: true, force: true });
       }
     }
 
@@ -860,6 +1065,13 @@ export class Conductor {
       phase_checkpoint: null,
       pipeline_status: 'agent_running',
     });
+
+    // Clear WIP directory so stale partial files don't confuse crash recovery on the re-run
+    const wipDir = path.join(projectDir, '.clados', 'wip');
+    if (fs.existsSync(wipDir)) {
+      await fs.promises.rm(wipDir, { recursive: true, force: true });
+      await fs.promises.mkdir(wipDir);
+    }
   }
 
   // ─── conductor.reason() escape hatch ────────────────────────────────────────
@@ -928,11 +1140,13 @@ export class Conductor {
 
     switch (phase) {
       case 0:
+        await this.session.archiveArtifact(projectDir, '00-concept.md');  // H-7
         await this.dispatchAgent({
           role: 'pm', phase: 0, projectDir,
           contextArtifacts: [{ artifact: '00-concept.md', type: 'required' }],
           contextPrefix: revisedContextPrefix,
         });
+        await this.session.archiveArtifact(projectDir, '00-validator.json');  // H-7
         await this.dispatchAgent({
           role: 'validator', phase: 0, projectDir,
           contextArtifacts: [
@@ -957,6 +1171,7 @@ export class Conductor {
         const needsEngineer = mustFixFindings.some((f) => srcFiles.some((sf) => f.file?.includes(sf)));
 
         if (needsPm) {
+          await this.session.archiveArtifact(projectDir, '01-prd.md');  // H-7
           await this.dispatchAgent({
             role: 'pm', phase: 1, projectDir,
             contextArtifacts: [
@@ -967,6 +1182,7 @@ export class Conductor {
           });
         }
         if (needsArchitect) {
+          await this.session.archiveArtifact(projectDir, '01-architecture.md');  // H-7
           await this.dispatchAgent({
             role: 'architect', phase: 1, projectDir,
             contextArtifacts: [
@@ -990,6 +1206,7 @@ export class Conductor {
             contextPrefix: revisedContextPrefix,
           });
         }
+        await this.session.archiveArtifact(projectDir, '01-validator.json');  // H-7
         await this.dispatchAgent({
           role: 'validator', phase: 1, projectDir,
           contextArtifacts: [
@@ -1006,8 +1223,10 @@ export class Conductor {
         const isFullStack = state.config.project_type === 'full-stack';
         const specVersionBefore = state.spec_version;
         // Targeted fix: only re-send flagged files
+        await this.session.archiveArtifact(projectDir, '02-build/backend-engineer-manifest.json');  // H-7
         await this.dispatchAgent({
           role: 'engineer', phase: 2, projectDir,
+          errorKey: 'engineer-backend',
           contextArtifacts: [
             { artifact: '01-api-spec.yaml', type: 'required' },
             { artifact: '02-build/backend-engineer-manifest.json', type: 'required' },
@@ -1016,18 +1235,27 @@ export class Conductor {
           contextPrefix: revisedContextPrefix,
           variables: { project_type: state.config.project_type, engineer_role: 'backend' },
         });
-        // For full-stack projects, also re-run the frontend Engineer
+        // For full-stack projects, re-run the frontend Engineer only when findings
+        // could plausibly affect frontend files. Skip if ALL findings are clearly
+        // attributable to backend-only paths (routes, models, controllers, db, etc.).
         if (isFullStack) {
-          await this.dispatchAgent({
-            role: 'engineer', phase: 2, projectDir,
-            contextArtifacts: [
-              { artifact: '01-api-spec.yaml', type: 'required' },
-              { artifact: '02-build/frontend-engineer-manifest.json', type: 'required' },
-              { artifact: '02-build/validator.json', type: 'required' },
-            ],
-            contextPrefix: revisedContextPrefix,
-            variables: { project_type: state.config.project_type, engineer_role: 'frontend' },
-          });
+          const backendOnlyPaths = ['src/routes', 'src/models', 'src/controllers', 'src/db', 'src/middleware', 'src/services'];
+          const needsFrontendRerun = mustFixFindings.length === 0 || mustFixFindings.some(
+            (f) => !f.file || !backendOnlyPaths.some((p) => f.file!.includes(p)),
+          );
+          if (needsFrontendRerun) {
+            await this.dispatchAgent({
+              role: 'engineer', phase: 2, projectDir,
+              errorKey: 'engineer-frontend',
+              contextArtifacts: [
+                { artifact: '01-api-spec.yaml', type: 'required' },
+                { artifact: '02-build/frontend-engineer-manifest.json', type: 'required' },
+                { artifact: '02-build/validator.json', type: 'required' },
+              ],
+              contextPrefix: revisedContextPrefix,
+              variables: { project_type: state.config.project_type, engineer_role: 'frontend' },
+            });
+          }
         }
         // Re-run contract validator since route registrations may have changed.
         // Also log if the API spec version diverged during this revision cycle.
@@ -1045,6 +1273,7 @@ export class Conductor {
           await runContractValidator(projectDir, specPath, entryFile);
         }
         await this.runTestRunner(projectDir);
+        await this.session.archiveArtifact(projectDir, '02-build/validator.json');  // H-7
         await this.dispatchAgent({
           role: 'validator', phase: 2, projectDir,
           contextArtifacts: [
@@ -1063,22 +1292,35 @@ export class Conductor {
           (f) => !f.file || pmFiles.some((pf) => f.file?.includes(pf)),
         );
         if (needsPm) {
+          await this.session.archiveArtifact(projectDir, '03-prd.md');  // H-7
           await this.dispatchAgent({
             role: 'pm', phase: 3, projectDir,
+            // Bug 2 fix: provide the original design spec as required context;
+            // PM derives the canonical spec by reading src/ via read_file.
             contextArtifacts: [
-              { artifact: '01-api-spec.yaml', type: 'reference' },
+              { artifact: '01-prd.md', type: 'reference' },
+              { artifact: '01-api-spec.yaml', type: 'required' },
               { artifact: '03-validator.json', type: 'required' },
             ],
             contextPrefix: revisedContextPrefix,
           });
         }
-        await this.dispatchAgent({
-          role: 'docs', phase: 3, projectDir,
-          contextArtifacts: [
-            { artifact: '03-validator.json', type: 'required' },
-          ],
-          contextPrefix: revisedContextPrefix,
-        });
+        // Only re-run docs if findings could plausibly affect documentation files.
+        // Any unattributed finding is treated conservatively as potentially docs-related.
+        const docsTargets = ['docs/', 'README', 'CHANGELOG', 'runbook'];
+        const needsDocs = mustFixFindings.some(
+          (f) => !f.file || docsTargets.some((d) => f.file?.includes(d)),
+        );
+        if (needsDocs) {
+          await this.dispatchAgent({
+            role: 'docs', phase: 3, projectDir,
+            contextArtifacts: [
+              { artifact: '03-validator.json', type: 'required' },
+            ],
+            contextPrefix: revisedContextPrefix,
+          });
+        }
+        await this.session.archiveArtifact(projectDir, '03-validator.json');  // H-7
         await this.dispatchAgent({
           role: 'validator', phase: 3, projectDir,
           contextArtifacts: [
@@ -1099,6 +1341,7 @@ export class Conductor {
           ],
           contextPrefix: revisedContextPrefix,
         });
+        await this.session.archiveArtifact(projectDir, '04-validator.json');  // H-7
         await this.dispatchAgent({
           role: 'validator', phase: 4, projectDir,
           contextArtifacts: [
@@ -1189,11 +1432,11 @@ export class Conductor {
             return {
               role,
               phase,
-              artifactPath: '',
-              finalText: '',
-              tokensInput: 0,
-              tokensOutput: 0,
-              costUsd: 0,
+              artifact_path: '',
+              final_text: '',
+              tokens_input: 0,
+              tokens_output: 0,
+              cost_usd: 0,
             };
           }
           // decision === 'retry' — the outer while loop reruns dispatchWithRetry
@@ -1264,22 +1507,29 @@ export class Conductor {
       resolved.map((a) => `### ${a.key}\n\n${a.content}`).join('\n\n---\n\n');
     if (contextPrefix) userContent = contextPrefix + '\n\n' + userContent;
 
-    // Inject crash recovery context for a restarted agent (consumed once)
-    const recoveryPrefix = this.crashRecoveryPrefix.get(role);
+    // Inject crash recovery context for a restarted agent (consumed once).
+    // Use mapKey (errorKey ?? role) to match how phase_checkpoint stores in_progress_agent,
+    // so full-stack engineer recovery prefixes ('engineer-backend' / 'engineer-frontend') are found.
+    const mapKey = config.errorKey ?? config.role;
+    const recoveryPrefix = this.crashRecoveryPrefix.get(mapKey);
     if (recoveryPrefix) {
       userContent = recoveryPrefix + '\n\n' + userContent;
-      this.crashRecoveryPrefix.delete(role);
+      this.crashRecoveryPrefix.delete(mapKey);
     }
     if (fullFetchPaths.length > 0) {
       const prefixed = fullFetchPaths.map((p) => `.clados/${p}`);
       userContent += `\n\n[NOTE: The following artifacts were compressed. Use read_file to access them in full: ${prefixed.join(', ')}]`;
     }
 
-    // Count context tokens (for budget check)
-    const contextTokens = await estimateTokens(systemPrompt + userContent, this.anthropic, this.logger);
+    // Count context tokens separately from the system prompt (H-14).
+    // system_prompt_tokens is pre-computed at startup; counting them again here
+    // would double-count relative to estimateNextPhase projections.
+    const systemTokens = entry.system_prompt_tokens ?? Math.ceil(systemPrompt.length / 3.5);
+    const contextTokens = await estimateTokens(userContent, this.anthropic, this.logger);
+    const totalInputTokens = systemTokens + contextTokens;
 
     // Budget pre-check
-    await this.budgetManager.checkPreDispatch(projectDir, entry, model, contextTokens, state);
+    await this.budgetManager.checkPreDispatch(projectDir, entry, model, totalInputTokens);
 
     // Set up WIP artifact path (extension reflects output type; engineer role suffix avoids
     // collision when backend + frontend engineers run concurrently in full-stack mode)
@@ -1289,7 +1539,7 @@ export class Conductor {
 
     // Update checkpoint: in_progress
     await this.session.updateCheckpoint(projectDir, {
-      in_progress_agent: role,
+      in_progress_agent: errorKey ?? role,  // use errorKey for composite identity (e.g. 'engineer-backend')
       in_progress_artifact_partial: path.relative(projectDir, wipPath),
     });
     await this.session.update(projectDir, { pipeline_status: 'agent_running' });
@@ -1300,6 +1550,7 @@ export class Conductor {
 
     // Retry loop
     let lastError: Error | null = null;
+    let contextCompressed = false;
     for (let attempt = 0; attempt < MAX_RETRIES; attempt++) {
       if (attempt > 0) {
         const delay = RETRY_DELAYS_MS[attempt - 1] ?? 30_000;
@@ -1310,7 +1561,7 @@ export class Conductor {
       try {
         const result = await this.streamingDispatch(
           role, phase, projectDir, claDosDir, wipPath, model,
-          systemPrompt, userContent, entry, state, compressionNeeded, deniedPrefixes,
+          systemPrompt, userContent, entry, state, compressionNeeded, deniedPrefixes, errorKey,
         );
         return result;
       } catch (err) {
@@ -1318,13 +1569,22 @@ export class Conductor {
         const errMsg = String(err);
         const isContextLength = errMsg.includes('context_length') || errMsg.includes('too_large');
 
-        if (isContextLength && attempt === 0) {
-          // Downgrade all to summaries and retry once more
+        if (isContextLength && !contextCompressed) {
+          // Downgrade all to summaries and retry once more.
+          // Re-prepend contextPrefix so the agent still receives its task instructions.
+          contextCompressed = true;
           this.logger.warn('agent.context_length', `Context too large for ${role} — downgrading all artifacts`);
-          userContent = resolved
+          const compressedArtifacts = resolved
             .map((a) => `### ${a.key}\n\n${a.content.slice(0, 500)}...[compressed]`)
             .join('\n\n---\n\n');
+          userContent = contextPrefix ? contextPrefix + '\n\n' + compressedArtifacts : compressedArtifacts;
           continue;
+        }
+
+        if (isContextLength) {
+          // Already compressed and still too large — don't waste remaining retry slots.
+          this.logger.warn('agent.context_overflow', `${role} context too large even after compression — exhausted`);
+          break;
         }
 
         const errorType = this.classifyError(errMsg);
@@ -1363,7 +1623,7 @@ export class Conductor {
   }
 
   private async streamingDispatch(
-    role: string,
+    role: AgentRole,
     phase: number,
     projectDir: string,
     claDosDir: string,
@@ -1375,16 +1635,18 @@ export class Conductor {
     state: SessionState,
     compressionNeeded: boolean,
     deniedPrefixes?: string[],
+    errorKey?: string,
   ): Promise<AgentResult> {
     const tools: Anthropic.Tool[] = this.buildToolDefinitions(entry.tools);
     const messages: Anthropic.MessageParam[] = [{ role: 'user', content: userContent }];
 
     let wipHandle: fs.WriteStream | null = null;
     let currentSection = '';
+    let lineBuffer = '';  // accumulates streaming text to detect headings split across token deltas
     let finalText = '';
     let totalInput = 0;
     let totalOutput = 0;
-    let finalArtifactPath = '';
+    const writtenPaths: string[] = [];  // M-14: collect all write_file paths
 
     // Clean WIP file at start of each attempt
     await writeFileAtomic(wipPath, '', { encoding: 'utf8' });
@@ -1411,11 +1673,18 @@ export class Conductor {
             assistantText += text;
             wipHandle?.write(text);
 
-            // Emit section heading events
-            const headingMatch = text.match(/^## (.+)/m);
-            if (headingMatch && headingMatch[1] !== currentSection) {
-              currentSection = headingMatch[1]!;
-              this.broadcast({ type: 'agent:stream', phase, agent: role, section: currentSection });
+            // Emit section heading events — buffer across token boundaries so headings
+            // split across multiple small deltas are still detected.
+            lineBuffer += text;
+            const newlineIdx = lineBuffer.lastIndexOf('\n');
+            if (newlineIdx >= 0) {
+              const completedLines = lineBuffer.slice(0, newlineIdx);
+              lineBuffer = lineBuffer.slice(newlineIdx + 1);
+              const headingMatch = completedLines.match(/^## (.+)$/m);
+              if (headingMatch && headingMatch[1] !== currentSection) {
+                currentSection = headingMatch[1]!;
+                this.broadcast({ type: 'agent:stream', phase, agent: role, section: currentSection });
+              }
             }
           }
         }
@@ -1425,8 +1694,11 @@ export class Conductor {
         totalOutput += finalMessage.usage.output_tokens;
         this.tpmTracker.record(finalMessage.usage.input_tokens + finalMessage.usage.output_tokens);
 
-        if (finalMessage.stop_reason === 'end_turn') {
+        if (finalMessage.stop_reason === 'end_turn' || finalMessage.stop_reason === 'max_tokens') {
           finalText = assistantText;
+          if (finalMessage.stop_reason === 'max_tokens') {
+            this.logger.warn('agent.max_tokens', `${role} hit max_tokens limit — output may be truncated`);
+          }
           break;
         }
 
@@ -1438,11 +1710,16 @@ export class Conductor {
           messages.push({ role: 'assistant', content: finalMessage.content });
           messages.push({ role: 'user', content: toolResults });
 
-          // Update finalArtifactPath from write_file calls
+          // Collect all write_file paths and update WIP from actual artifact content
           for (const block of finalMessage.content) {
             if (block.type === 'tool_use' && block.name === 'write_file') {
-              const writtenPath = (block.input as { path: string }).path;
-              finalArtifactPath = writtenPath;
+              const writtenPath = (block.input as { path: string; content: string }).path;
+              const writtenContent = (block.input as { path: string; content: string }).content;
+              if (writtenPath && !writtenPaths.includes(writtenPath)) writtenPaths.push(writtenPath);
+              // Write WIP from actual artifact content, not raw conversation text
+              if (writtenContent) {
+                await writeFileAtomic(wipPath, writtenContent, { encoding: 'utf8' });
+              }
             }
           }
         }
@@ -1451,8 +1728,12 @@ export class Conductor {
       await new Promise<void>((res) => { wipHandle?.end(res); });
     }
 
-    // Determine the canonical artifact path from what was written
-    const resolvedArtifactPath = finalArtifactPath || this.inferArtifactPath(role, phase);
+    // Determine the primary artifact path (used for broadcast + AgentResult)
+    const primaryArtifactPath = writtenPaths[0] ?? this.inferArtifactPath(role, phase);
+
+    if (writtenPaths.length === 0) {
+      this.logger.warn('agent.no_writes', `${role} (phase ${phase}) made no write_file calls — inferring artifact path`);
+    }
 
     const costUsd = calculateCostUsd(model, totalInput, totalOutput);
 
@@ -1463,19 +1744,36 @@ export class Conductor {
       cost_usd: costUsd,
     });
 
-    // Register artifact
-    const artifactKey = path.relative(claDosDir, path.join(projectDir, resolvedArtifactPath));
-    const tokenCount = await estimateTokens(finalText, this.anthropic, this.logger);
-    await this.session.registerArtifact(projectDir, artifactKey, {
-      path: resolvedArtifactPath,
-      token_count: tokenCount,
-      version: 1,
-    });
+    // Register every written artifact (M-14); fall back to inferred path if none
+    const pathsToRegister = writtenPaths.length > 0 ? writtenPaths : [primaryArtifactPath];
+    for (const wp of pathsToRegister) {
+      // Only register artifacts that are inside .clados/
+      const fullPath = path.join(projectDir, wp);
+      const artifactKey = path.relative(claDosDir, fullPath);
+      if (artifactKey.startsWith('..') || path.isAbsolute(artifactKey)) {
+        // Paths outside .clados/ (e.g. src/, tests/, infra/, docs/) are tracked by the agent:done
+        // broadcast but not in session.artifacts (which is used for context injection and cost
+        // estimation). This is expected for agents that write to the project tree rather than
+        // .clados/. When writtenPaths is empty we inferred this path — the agent.no_writes warn
+        // above already signals the real problem; this debug log closes the trace.
+        this.logger.debug('agent.artifact_skip', `${role} phase ${phase}: ${wp} is outside .clados/ — not registered in artifacts table`);
+        continue;
+      }
+      try {
+        const content = fs.existsSync(fullPath)
+          ? await fs.promises.readFile(fullPath, 'utf-8')
+          : finalText;
+        const tc = await estimateTokens(content, this.anthropic, this.logger);
+        await this.session.registerArtifact(projectDir, artifactKey, { path: wp, token_count: tc, version: 1, created_at: new Date().toISOString(), agent: role });
+      } catch {
+        // Non-fatal: don't fail dispatch over a registration error
+      }
+    }
 
     // Update checkpoint: agent complete
     const currentState = await this.session.read(projectDir);
     const completedAgents = [...(currentState.phase_checkpoint?.completed_agents ?? [])];
-    if (!completedAgents.includes(role)) completedAgents.push(role);
+    if (!completedAgents.includes(errorKey ?? role)) completedAgents.push(errorKey ?? role);
     await this.session.updateCheckpoint(projectDir, {
       completed_agents: completedAgents,
       in_progress_agent: null,
@@ -1487,7 +1785,7 @@ export class Conductor {
       type: 'agent:done',
       phase,
       agent: role,
-      artifact: resolvedArtifactPath,
+      artifact: primaryArtifactPath,
       tokens_used: { input: totalInput, output: totalOutput },
       cost_usd: costUsd,
       context_compressed: compressionNeeded,
@@ -1496,11 +1794,11 @@ export class Conductor {
     return {
       role,
       phase,
-      artifactPath: resolvedArtifactPath,
-      finalText,
-      tokensInput: totalInput,
-      tokensOutput: totalOutput,
-      costUsd,
+      artifact_path: primaryArtifactPath,
+      final_text: finalText,
+      tokens_input: totalInput,
+      tokens_output: totalOutput,
+      cost_usd: costUsd,
     };
   }
 
@@ -1557,8 +1855,13 @@ export class Conductor {
       try {
         switch (block.name) {
           case 'read_file': {
-            const filePath = this.resolveSafePath(projectDir, input['path']!);
-            if (deniedPrefixes?.some((p) => filePath.startsWith(path.resolve(projectDir, p)))) {
+            if (!input['path']) { toolResult = 'Error: read_file requires a path argument'; break; }
+            const filePath = this.resolveSafePath(projectDir, input['path']);
+            // Bug 3 fix: include path.sep in the check so 'src' doesn't match 'src-backup/' etc.
+            if (deniedPrefixes?.some((p) => {
+              const resolvedPrefix = path.resolve(projectDir, p);
+              return filePath === resolvedPrefix || filePath.startsWith(resolvedPrefix + path.sep);
+            })) {
               toolResult = `Access denied: ${input['path']} is not available to this agent.`;
               break;
             }
@@ -1566,18 +1869,22 @@ export class Conductor {
             break;
           }
           case 'write_file': {
-            const filePath = this.resolveSafePath(projectDir, input['path']!);
+            if (!input['path'] || input['content'] == null) {
+              toolResult = 'Error: write_file requires path and content arguments'; break;
+            }
+            const filePath = this.resolveSafePath(projectDir, input['path']);
             await fs.promises.mkdir(path.dirname(filePath), { recursive: true });
-            await writeFileAtomic(filePath, input['content']!, { encoding: 'utf8' });
-            // Bump spec version whenever the API spec is updated (divergence detection)
-            if (input['path']?.includes('api-spec.yaml')) {
+            await writeFileAtomic(filePath, input['content'], { encoding: 'utf8' });
+            // Bump spec version only when the Phase 1 API spec is updated (divergence detection)
+            if (input['path'] === '01-api-spec.yaml' || input['path'] === '.clados/01-api-spec.yaml') {
               await this.session.bumpSpecVersion(projectDir);
             }
             toolResult = `Written: ${input['path']}`;
             break;
           }
           case 'list_files': {
-            const dirPath = this.resolveSafePath(projectDir, input['path']!);
+            if (!input['path']) { toolResult = 'Error: list_files requires a path argument'; break; }
+            const dirPath = this.resolveSafePath(projectDir, input['path']);
             const entries = await fs.promises.readdir(dirPath, { withFileTypes: true });
             toolResult = entries.map((e) => `${e.name}${e.isDirectory() ? '/' : ''}`).join('\n');
             break;
@@ -1645,12 +1952,18 @@ export class Conductor {
   }
 
   private getPhaseAgents(phase: number, config: SessionState['config']): AgentRegistryEntry[] {
+    if (phase === 2) {
+      const base = ['qa', 'validator',
+        ...(config.security_enabled ? ['security'] : []),
+        ...(config.wrecker_enabled ? ['wrecker'] : []),
+      ];
+      // M-19: full-stack has two parallel engineers; include both in cost estimate
+      const engineers = config.project_type === 'full-stack' ? ['engineer', 'engineer'] : ['engineer'];
+      return [...engineers, ...base].map((r) => this.getRegistryEntry(r)).filter(Boolean);
+    }
     const phaseRoles: Record<number, string[]> = {
       0: ['pm', 'validator'],
       1: ['pm', 'architect', 'engineer', 'validator'],
-      2: ['engineer', 'qa', 'validator',
-          ...(config.security_enabled ? ['security'] : []),
-          ...(config.wrecker_enabled ? ['wrecker'] : [])],
       3: ['docs', 'pm', 'validator'],
       4: ['devops', 'validator'],
     };
@@ -1672,26 +1985,30 @@ export class Conductor {
     try {
       const raw = await fs.promises.readFile(filePath, 'utf-8');
       const parsed = sanitizeJson(raw) as { findings?: Finding[] };
-      return parsed.findings ?? [];
+      // Normalise: LLM output may omit status on new findings. Defaulting here
+      // ensures every Finding in the pipeline satisfies the non-optional type.
+      return (parsed.findings ?? []).map((f) => ({ ...f, status: f.status ?? 'new' }));
     } catch {
       return [];
     }
   }
 
   private inferArtifactPath(role: string, phase: number): string {
+    // Paths prefixed with .clados/ are stored inside the .clados/ directory.
+    // This ensures the artifactKey computed via path.relative(claDosDir, ...) is correct.
     const map: Record<string, string> = {
-      pm: phase === 3 ? '03-prd.md' : phase === 1 ? '01-prd.md' : '00-concept.md',
-      architect: '01-architecture.md',
+      pm: phase === 3 ? '.clados/03-prd.md' : phase === 1 ? '.clados/01-prd.md' : '.clados/00-concept.md',
+      architect: '.clados/01-architecture.md',
       engineer: phase === 1 ? 'src/index.ts' : 'src/',
       qa: 'tests/integration/',
       // Phase 2 Validator lives in the 02-build/ subdirectory
-      validator: phase === 2 ? '02-build/validator.json' : `0${phase}-validator.json`,
-      security: '02-build/security-report.md',
-      wrecker: '02-build/wrecker.json',
+      validator: phase === 2 ? '.clados/02-build/validator.json' : `.clados/0${phase}-validator.json`,
+      security: '.clados/02-build/security-report.md',
+      wrecker: '.clados/02-build/wrecker.json',
       devops: 'infra/',
       docs: 'docs/',
     };
-    return map[role] ?? `phase${phase}-${role}.txt`;
+    return map[role] ?? `.clados/phase${phase}-${role}.txt`;
   }
 
   private classifyError(errMsg: string): 'api_429' | 'api_5xx' | 'context_length' | 'timeout' | 'parse_error' {

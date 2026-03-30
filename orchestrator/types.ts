@@ -10,6 +10,21 @@ export type PipelineStatus =
 
 export type ProjectType = 'backend-only' | 'full-stack' | 'cli-tool' | 'library';
 
+/** Canonical set of agent roles in v1. errorKey suffixes like 'engineer-backend' are NOT roles. */
+export type AgentRole =
+  | 'pm'
+  | 'architect'
+  | 'engineer'
+  | 'qa'
+  | 'validator'
+  | 'security'
+  | 'wrecker'
+  | 'devops'
+  | 'docs';
+
+/** The three tool names the Conductor exposes to agents. Any other value in agent-registry.json is a config error. */
+export type AgentTool = 'read_file' | 'write_file' | 'list_files';
+
 // ─── Findings & validation ───────────────────────────────────────────────────
 
 export type FindingSeverity = 'must_fix' | 'should_fix' | 'suggestion';
@@ -22,13 +37,24 @@ export type FindingStatus =
   | 'new_discovery';
 
 export interface Finding {
+  /**
+   * Stable identifier used for finding override tracking across revisions.
+   * Format: `{phase}-{agent}-{category}-{index}`, e.g. `2-validator-security-0`.
+   * Must be deterministic per finding so that override_findings[] in GateResponse
+   * correctly matches the same finding on repeated gate opens.
+   */
   id: string;
   severity: FindingSeverity;
   category: string;
   description: string;
   file?: string;
   line?: number;
-  status?: FindingStatus;
+  /**
+   * Always present — the Validator must set this on every finding.
+   * loadValidatorFindings() defaults missing values to 'new' so runtime LLM output
+   * that omits the field is normalised before any filter logic runs.
+   */
+  status: FindingStatus;
 }
 
 // ─── Session state ────────────────────────────────────────────────────────────
@@ -62,6 +88,10 @@ export interface ArtifactRecord {
   path: string;
   token_count: number;
   version: number;
+  /** ISO timestamp set when the artifact is first registered (or re-registered on overwrite). */
+  created_at?: string;
+  /** Role of the agent that produced this artifact. */
+  agent?: AgentRole;
 }
 
 export interface ConductorDecision {
@@ -84,6 +114,8 @@ export interface SessionState {
   project_id: string;
   project_name: string;
   created_at: string;
+  /** Updated on every atomic state write — useful for diagnosing stale state after a crash. */
+  updated_at: string;
   pipeline_status: PipelineStatus;
   config: SessionConfig;
   spec_version: number;
@@ -113,11 +145,11 @@ export interface ContextArtifact {
 }
 
 export interface AgentRegistryEntry {
-  role: string;
+  role: AgentRole;
   system_prompt: string;
   default_model: string;
   escalation_model: string;
-  tools: string[];
+  tools: AgentTool[];
   enabled_when: AgentEnabledWhen;
   context_artifacts: ContextArtifact[];
   system_prompt_tokens: number | null;
@@ -138,7 +170,7 @@ export interface DispatchVariables {
 }
 
 export interface AgentDispatchConfig {
-  role: string;
+  role: AgentRole;
   phase: number;
   projectDir: string;
   /** Injected into system prompt via {{variable_name}} syntax */
@@ -156,13 +188,13 @@ export interface AgentDispatchConfig {
 }
 
 export interface AgentResult {
-  role: string;
+  role: AgentRole;
   phase: number;
-  artifactPath: string;
-  finalText: string;
-  tokensInput: number;
-  tokensOutput: number;
-  costUsd: number;
+  artifact_path: string;
+  final_text: string;
+  tokens_input: number;
+  tokens_output: number;
+  cost_usd: number;
 }
 
 // ─── WebSocket events (server → client) ──────────────────────────────────────
@@ -244,25 +276,21 @@ export type WsServerEvent =
 
 // ─── Gate actions (REST) ──────────────────────────────────────────────────────
 
-export type GateAction = 'approve' | 'revise' | 'abort' | 'goto';
+/** Derives from GateResponse so it never drifts from the discriminated union. */
+export type GateAction = GateResponse['action'];
 
-export interface GateResponse {
-  action: GateAction;
-  revision_text?: string;
-  override_findings?: string[];
-  goto_gate?: number;
-}
+export type GateResponse =
+  | { action: 'approve'; override_findings?: string[] }
+  | { action: 'revise'; revision_text: string; override_findings?: string[] }
+  | { action: 'abort' }
+  | { action: 'goto'; goto_gate: number };
 
 // ─── Contract validator output ────────────────────────────────────────────────
 
-export interface ContractFinding {
-  type: 'missing_route' | 'undeclared_route' | 'unresolved_import';
-  method?: string;
-  path?: string;
-  file?: string;
-  line?: number;
-  message: string;
-}
+export type ContractFinding =
+  | { type: 'missing_route'; method: string; path: string; message: string }
+  | { type: 'undeclared_route'; method: string; path: string; file: string; line: number; message: string }
+  | { type: 'unresolved_import'; file: string; line: number; message: string };
 
 export interface ContractValidatorResult {
   passed: boolean;
@@ -273,7 +301,7 @@ export interface ContractValidatorResult {
 
 // ─── Test runner output ────────────────────────────────────────────────────────
 
-export interface TestRunnerResult {
+export interface TestSuiteResult {
   passed: boolean;
   total: number;
   passed_count: number;
@@ -281,13 +309,10 @@ export interface TestRunnerResult {
   skipped_count: number;
   duration_ms: number;
   failures: Array<{ test: string; message: string }>;
-  wrecker_tests?: {
-    passed: boolean;
-    total: number;
-    passed_count: number;
-    failed_count: number;
-    failures: Array<{ test: string; message: string }>;
-  };
+}
+
+export interface TestRunnerResult extends TestSuiteResult {
+  wrecker_tests?: TestSuiteResult;
 }
 
 // ─── Log entry ────────────────────────────────────────────────────────────────

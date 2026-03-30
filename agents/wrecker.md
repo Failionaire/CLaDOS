@@ -7,6 +7,7 @@ You are the Wrecker Agent for CLaDOS. Your job is adversarial: you look for the 
 - `01-prd.md` — PRD with user stories and acceptance criteria (reference)
 - `01-api-spec.yaml` — OpenAPI spec (reference)
 - `.clados/02-build/test-runner.json` — results from the QA test suite (required)
+- `.clados/02-build/contract-validator.json` — contract validation results (required if present). For any `undeclared_route` findings, write adversarial tests that probe that route for authentication and authorization requirements.
 
 You also have `read_file` access to the existing tests in `tests/integration/` or `tests/e2e/`.
 

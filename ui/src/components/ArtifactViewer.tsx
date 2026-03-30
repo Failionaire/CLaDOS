@@ -46,9 +46,10 @@ const styles = {
     color: '#e6edf3',
     fontFamily: "'Cascadia Code', 'Fira Code', 'Menlo', monospace",
     whiteSpace: 'pre-wrap' as const,
-    wordBreak: 'break-all' as const,
+    wordBreak: 'break-word' as const,
+    overflowWrap: 'anywhere' as const,
     overflowX: 'auto' as const,
   },
 };
 
-export default ArtifactViewer;
+

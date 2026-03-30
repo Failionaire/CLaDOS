@@ -39,12 +39,13 @@ const CYCLE_COLORS = ['#58a6ff', '#3fb950', '#d29922', '#bc8cff'];
 
 export function AgentCard({ card, onRetry, onSkip }: AgentCardProps) {
   const animRef = useRef<number | null>(null);
-  const barRef = useRef<HTMLDivElement | null>(null);
+  const cardRef = useRef<HTMLDivElement | null>(null);
   const colorIdxRef = useRef(0);
 
   useEffect(() => {
     if (card.status !== 'running') {
       if (animRef.current) cancelAnimationFrame(animRef.current);
+      if (cardRef.current) cardRef.current.style.borderColor = STATUS_BORDER[card.status];
       return;
     }
 
@@ -56,13 +57,10 @@ export function AgentCard({ card, onRetry, onSkip }: AgentCardProps) {
       const elapsed = (ts - startTime) % CYCLE_DURATION;
       const progress = elapsed / CYCLE_DURATION;
 
-      if (barRef.current) {
-        const colorIdx = Math.floor(progress * CYCLE_COLORS.length) % CYCLE_COLORS.length;
-        if (colorIdx !== colorIdxRef.current) {
-          colorIdxRef.current = colorIdx;
-          barRef.current.style.background = CYCLE_COLORS[colorIdx];
-        }
-        barRef.current.style.width = `${(progress * 100).toFixed(1)}%`;
+      const colorIdx = Math.floor(progress * CYCLE_COLORS.length) % CYCLE_COLORS.length;
+      if (cardRef.current && colorIdx !== colorIdxRef.current) {
+        colorIdxRef.current = colorIdx;
+        cardRef.current.style.borderColor = CYCLE_COLORS[colorIdx];
       }
 
       animRef.current = requestAnimationFrame(animate);
@@ -73,23 +71,24 @@ export function AgentCard({ card, onRetry, onSkip }: AgentCardProps) {
   }, [card.status]);
 
   return (
-    <div style={{
-      ...styles.card,
-      background: STATUS_COLORS[card.status],
-      borderColor: STATUS_BORDER[card.status],
-    }}>
-      {/* Running animation bar */}
-      {card.status === 'running' && (
-        <div style={styles.animBarTrack}>
-          <div ref={barRef} style={styles.animBar} />
-        </div>
-      )}
-
+    <div
+      ref={cardRef}
+      style={{
+        ...styles.card,
+        background: STATUS_COLORS[card.status],
+        borderColor: STATUS_BORDER[card.status],
+      }}
+    >
       <div style={styles.header}>
         <span style={styles.role}>{card.role}</span>
-        <span style={{ ...styles.statusBadge, color: STATUS_BORDER[card.status] }}>
-          {STATUS_LABEL[card.status]}
-        </span>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+          {card.model && (card.status === 'running' || card.status === 'done') && (
+            <span style={styles.modelLabel}>{card.model}</span>
+          )}
+          <span style={{ ...styles.statusBadge, color: STATUS_BORDER[card.status] }}>
+            {STATUS_LABEL[card.status]}
+          </span>
+        </div>
       </div>
 
       {card.status === 'running' && card.currentSection && (
@@ -111,7 +110,7 @@ export function AgentCard({ card, onRetry, onSkip }: AgentCardProps) {
         <div style={styles.errorMsg}>{card.errorMessage}</div>
       )}
 
-      {(card.status === 'error' || card.status === 'flagged') && (
+      {(onRetry || (onSkip && card.status === 'error')) && (
         <div style={styles.actions}>
           {onRetry && <button style={styles.retryBtn} onClick={onRetry}>Retry</button>}
           {onSkip && card.status === 'error' && (
@@ -131,20 +130,7 @@ const styles = {
     position: 'relative' as const,
     overflow: 'hidden',
     minWidth: 160,
-  },
-  animBarTrack: {
-    position: 'absolute' as const,
-    bottom: 0,
-    left: 0,
-    right: 0,
-    height: 2,
-    background: '#21262d',
-  },
-  animBar: {
-    height: '100%',
-    width: '0%',
-    background: '#58a6ff',
-    transition: 'background 0.3s',
+    transition: 'border-color 0.4s',
   },
   header: {
     display: 'flex',
@@ -162,6 +148,11 @@ const styles = {
     fontWeight: 500,
     textTransform: 'uppercase' as const,
     letterSpacing: '0.5px',
+  },
+  modelLabel: {
+    fontSize: 10,
+    color: '#6e7681',
+    fontFamily: 'monospace',
   },
   section: {
     fontSize: 12,
@@ -213,4 +204,4 @@ const styles = {
   },
 };
 
-export default AgentCard;
+

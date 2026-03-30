@@ -1,4 +1,5 @@
 import type { SessionState } from '../types';
+import { PHASE_LABELS } from '../constants';
 
 interface TopbarProps {
   sessionState: SessionState | null;
@@ -6,8 +7,6 @@ interface TopbarProps {
   onFocusGate: () => void;
   hasPendingGate: boolean;
 }
-
-const PHASE_LABELS = ['Concept', 'Planning', 'Build', 'Docs', 'Infra'];
 
 const STATUS_COLORS: Record<string, string> = {
   idle: '#8b949e',
@@ -22,6 +21,7 @@ export function Topbar({ sessionState, connectionStatus, onFocusGate, hasPending
   const status = sessionState?.pipeline_status ?? 'idle';
   const phase = sessionState?.current_phase ?? 0;
   const costUsd = sessionState?.total_cost_usd ?? 0;
+  const showCost = sessionState?.phases_completed.includes(0) ?? false;
   const projectName = sessionState?.project_name ?? 'CLaDOS';
 
   return (
@@ -57,7 +57,7 @@ export function Topbar({ sessionState, connectionStatus, onFocusGate, hasPending
 
         <div style={styles.right}>
           <div style={styles.statusDot(STATUS_COLORS[status])} title={status} />
-          <span style={styles.costLabel}>${costUsd.toFixed(4)}</span>
+          {showCost && <span style={styles.costLabel}>${costUsd.toFixed(4)}</span>}
           {hasPendingGate && (
             <button style={styles.focusBtn} onClick={onFocusGate}>
               Review ↑
@@ -173,4 +173,4 @@ const styles = {
   },
 };
 
-export default Topbar;
+

@@ -109,9 +109,22 @@ This file must reflect how the server actually runs, not placeholder values.
 
 - All routes declared in `01-api-spec.yaml` must be registered. Use explicit `app.get/post/put/patch/delete()` calls or one level of `app.use('/prefix', router)` — no dynamic route loading (fs.readdirSync etc.).
 - Include `express-openapi-validator` middleware. It must be configured to enforce the spec on every request.
-- Seed a test user in database migrations or startup code matching the credentials in `test-context.json`.
+- Seed a test user behind a `NODE_ENV !== 'production'` guard, or in a separate `db:seed:test` npm script that is never run by the production startup sequence. Never unconditionally seed test credentials in a migration that runs on `npm start`.
 - Do not hardcode secrets. All secrets come from environment variables.
 - The `startup_command` in `test-context.json` must actually start the server in the test environment (e.g., `npx ts-node src/index.ts` or `npm start`).
 - For full-stack projects ({{project_type}} === "full-stack"), the frontend engineer must use the OpenAPI spec as the backend contract — do not make assumptions about response shapes.
 - Manifest files you intend to modify from the scaffold must be listed with `"source": "scaffold"`. Scaffold files not in your manifest are preserved as-is.
 - All `write_file` paths are relative to project root (e.g., `src/index.ts`, not `.clados/src/index.ts`).
+
+### Fix loop task (when Validator findings are provided)
+
+You will receive:
+- The manifest from Pass 1
+- The Validator findings JSON
+- The full content of only the flagged files
+
+Your task is to fix the specific issues described in the `must_fix` and `should_fix` findings. Rules:
+- Only modify files explicitly named in the findings
+- Do not regenerate files not mentioned
+- Do not re-run Pass 1 or emit a new manifest
+- After fixing, re-emit `test-context.json` only if the startup configuration changed

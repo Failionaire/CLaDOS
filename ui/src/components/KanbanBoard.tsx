@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { AgentCard } from './AgentCard';
 import type { AgentCardState, SessionState, WsEvent } from '../types';
+import { PHASE_LABELS } from '../constants';
 
 interface KanbanBoardProps {
   sessionState: SessionState | null;
@@ -8,8 +9,6 @@ interface KanbanBoardProps {
   onRetry: (phase: number, agent: string, errorKey?: string) => void;
   onSkip: (phase: number, agent: string, errorKey?: string) => void;
 }
-
-const PHASE_LABELS = ['Phase 0 — Concept', 'Phase 1 — Planning', 'Phase 2 — Build', 'Phase 3 — Docs', 'Phase 4 — Infra'];
 
 // The ordered agents per phase
 const PHASE_AGENTS: Record<number, string[]> = {
@@ -63,6 +62,14 @@ export function KanbanBoard({ sessionState, events, onRetry, onSkip }: KanbanBoa
   useEffect(() => {
     const latestEvent = events[events.length - 1];
     if (!latestEvent) return;
+
+    // On reconnect, App.tsx resets events to [snapshot] (H-8).
+    // Clear the index-based dedup set so subsequent real events are processed.
+    if (latestEvent.type === 'state:snapshot') {
+      processedEvents.current.clear();
+      return;
+    }
+
     const idx = events.length - 1;
     if (processedEvents.current.has(idx)) return;
     processedEvents.current.add(idx);
@@ -166,7 +173,7 @@ export function KanbanBoard({ sessionState, events, onRetry, onSkip }: KanbanBoa
           >
             <button style={styles.columnHeader} onClick={() => toggleCollapse(phase)}>
               <span style={{ color: isDone ? '#3fb950' : isActive ? '#58a6ff' : '#8b949e' }}>
-                {PHASE_LABELS[phase]}
+                {`Phase ${phase} — ${PHASE_LABELS[phase]}`}
               </span>
               <span style={styles.collapseIcon}>{isCollapsed ? '▶' : '▼'}</span>
             </button>
@@ -243,4 +250,4 @@ const styles = {
   },
 };
 
-export default KanbanBoard;
+

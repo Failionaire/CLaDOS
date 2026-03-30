@@ -5,13 +5,13 @@
 
 import path from 'path';
 import fs from 'fs';
+import readline from 'readline';
 
 import type { SessionConfig, ProjectType } from './types.js';
 import { SessionManager } from './session.js';
 import { Logger } from './logger.js';
 import { Conductor } from './conductor.js';
 import { createExpressApp, findFreePort } from './server.js';
-import type { WsServerEvent } from './types.js';
 
 // ─── Validation ───────────────────────────────────────────────────────────────
 
@@ -45,16 +45,24 @@ async function handleNew(projectName: string): Promise<void> {
     process.exit(1);
   }
 
+  // Collect setup inputs before creating any files — so Ctrl+C during prompts
+  // leaves no orphaned directory that blocks a subsequent `clados new`.
+  const config = await promptSetup();
+
   console.log(`\nCreating project: ${projectName}`);
   await fs.promises.mkdir(projectDir, { recursive: true });
 
-  // Collect setup inputs from stdin
-  const config = await promptSetup();
-
   const session = new SessionManager();
-  await session.init(projectDir, projectName, config);
-  const logger = new Logger(projectDir);
+  try {
+    await session.init(projectDir, projectName, config);
+  } catch (err) {
+    // session.init failed before any valid state was written — clean up so the
+    // user can retry `clados new` without hitting "directory already exists".
+    try { await fs.promises.rm(projectDir, { recursive: true, force: true }); } catch { /* best-effort */ }
+    throw err;
+  }
 
+  const logger = new Logger(projectDir);
   await startServer(projectDir, projectName, apiKey, session, logger, true);
 }
 
@@ -79,6 +87,33 @@ async function handleResume(projectName: string): Promise<void> {
   await startServer(projectDir, projectName, apiKey, session, logger, false);
 }
 
+// ─── Pipeline run loop ────────────────────────────────────────────────────────
+
+async function runPipelineLoop(conductor: Conductor, projectDir: string, logger: Logger): Promise<void> {
+  let keepRunning = true;
+  while (keepRunning) {
+    try {
+      await conductor.runPipeline(projectDir);
+      keepRunning = false;
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      if (msg === 'PIPELINE_ABANDONED') {
+        console.log('\nProject abandoned.');
+        keepRunning = false;
+      } else if (msg.startsWith('GOTO_PHASE_')) {
+        // runPipeline re-reads current_phase from session state — just loop
+        continue;
+      } else {
+        logger.error('cli.pipeline_error', msg, {
+          stack: err instanceof Error ? err.stack : undefined,
+        });
+        console.error('\nPipeline error:', msg);
+        keepRunning = false;
+      }
+    }
+  }
+}
+
 // ─── Server startup ───────────────────────────────────────────────────────────
 
 async function startServer(
@@ -89,14 +124,11 @@ async function startServer(
   logger: Logger,
   isNew: boolean,
 ): Promise<void> {
-  // Broadcast is initially a no-op; replaced by the server after WebSocket setup
-  let broadcastFn: (event: WsServerEvent) => void = () => { /* no-op until server binds */ };
-
   const conductor = new Conductor(
     apiKey,
     session,
     logger,
-    (event) => broadcastFn(event),
+    () => { /* no-op; real broadcast wired by createExpressApp via setBroadcast */ },
   );
 
   await conductor.init();
@@ -119,8 +151,8 @@ async function startServer(
     await open(url);
   } catch { /* non-fatal — user can open manually */ }
 
-  // Graceful shutdown
-  process.on('SIGINT', async () => {
+  // Graceful shutdown — process.once prevents stacking if startServer is ever re-called
+  process.once('SIGINT', async () => {
     logger.info('cli.shutdown', 'SIGINT received — shutting down');
     try {
       const state = await session.read(projectDir);
@@ -130,64 +162,28 @@ async function startServer(
       }
     } catch { /* ignore */ }
     httpServer.close(() => process.exit(0));
+    // Ensure exit even if live WebSocket connections prevent close() from draining
+    setTimeout(() => process.exit(0), 3000).unref();
   });
 
   // Start the pipeline
-  if (isNew) {
-    let keepRunning = true;
-    while (keepRunning) {
-      try {
-        await conductor.runPipeline(projectDir);
-        keepRunning = false;
-      } catch (err) {
-        const msg = String(err);
-        if (msg === 'PIPELINE_ABANDONED') {
-          console.log('\nProject abandoned.');
-          keepRunning = false;
-        } else if (msg.startsWith('GOTO_PHASE_')) {
-          // runPipeline re-reads current_phase from session state — just loop
-          continue;
-        } else {
-          logger.error('cli.pipeline_error', msg);
-          console.error('\nPipeline error:', msg);
-          keepRunning = false;
-        }
-      }
-    }
-  } else {
+  if (!isNew) {
     const state = await session.read(projectDir);
     if (state.pipeline_status === 'complete') {
       console.log('This project is complete. All phases have been approved.');
+      return;
     } else if (state.pipeline_status === 'abandoned') {
       console.log('This project was previously abandoned. Restart to re-run from the last gate.');
-    } else {
-      let keepRunning = true;
-      while (keepRunning) {
-        try {
-          await conductor.runPipeline(projectDir);
-          keepRunning = false;
-        } catch (err) {
-          const msg = String(err);
-          if (msg === 'PIPELINE_ABANDONED') {
-            console.log('\nProject abandoned.');
-            keepRunning = false;
-          } else if (msg.startsWith('GOTO_PHASE_')) {
-            continue;
-          } else {
-            logger.error('cli.pipeline_error', msg);
-            console.error('\nPipeline error:', msg);
-            keepRunning = false;
-          }
-        }
-      }
+      return;
     }
   }
+
+  await runPipelineLoop(conductor, projectDir, logger);
 }
 
 // ─── Interactive setup prompt ─────────────────────────────────────────────────
 
 async function promptSetup(): Promise<SessionConfig> {
-  const readline = await import('readline');
   const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
 
   const ask = (question: string): Promise<string> =>
@@ -195,7 +191,12 @@ async function promptSetup(): Promise<SessionConfig> {
 
   console.log('\n── CLaDOS Project Setup ──────────────────────────────────────\n');
 
-  const idea = await ask('Describe your project idea:\n> ');
+  // Re-prompt until a non-empty idea is given
+  let idea = '';
+  while (!idea) {
+    idea = (await ask('Describe your project idea:\n> ')).trim();
+    if (!idea) console.log('Project idea cannot be empty. Please try again.');
+  }
 
   console.log('\nProject type:');
   console.log('  1. backend-only');
@@ -204,7 +205,11 @@ async function promptSetup(): Promise<SessionConfig> {
   console.log('  4. library');
   const typeChoice = await ask('Select (1-4): ');
   const projectTypes: ProjectType[] = ['backend-only', 'full-stack', 'cli-tool', 'library'];
-  const projectType: ProjectType = projectTypes[parseInt(typeChoice, 10) - 1] ?? 'backend-only';
+  const selectedType = projectTypes[parseInt(typeChoice, 10) - 1];
+  if (!selectedType) {
+    console.log('Invalid selection — defaulting to "backend-only".');
+  }
+  const projectType: ProjectType = selectedType ?? 'backend-only';
 
   console.log('\nOptional agents (press Enter to skip):');
   const securityRaw = await ask('Enable Security agent? (y/N): ');
@@ -226,11 +231,11 @@ async function promptSetup(): Promise<SessionConfig> {
 
   return {
     project_type: projectType,
-    idea: idea.trim(),
+    idea,
     security_enabled: securityRaw.trim().toLowerCase() === 'y',
     wrecker_enabled: wreckerRaw.trim().toLowerCase() === 'y',
     is_high_complexity: complexityRaw.trim().toLowerCase() === 'y',
-    spend_cap: spend_cap !== null && !isNaN(spend_cap) ? spend_cap : null,
+    spend_cap,
   };
 }
 
@@ -266,6 +271,7 @@ async function main(): Promise<void> {
 }
 
 main().catch((err) => {
-  console.error('\nFatal error:', err);
+  console.error('\nFatal error:', err instanceof Error ? err.message : err);
+  if (err instanceof Error && err.stack) console.error(err.stack);
   process.exit(1);
 });

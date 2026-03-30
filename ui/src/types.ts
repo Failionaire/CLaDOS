@@ -26,7 +26,8 @@ export interface Finding {
   description: string;
   file?: string;
   line?: number;
-  status?: FindingStatus;
+  status: FindingStatus;
+  /** UI-only: tracks whether the user has overridden this finding. Not stored in orchestrator state. */
   override?: boolean;
 }
 
@@ -59,6 +60,7 @@ export interface SessionState {
   project_id: string;
   project_name: string;
   created_at: string;
+  updated_at: string;
   pipeline_status: PipelineStatus;
   config: SessionConfig;
   spec_version: number;
@@ -76,7 +78,7 @@ export interface SessionState {
   }>;
   dependency_divergences: string[];
   validator_tier: 'sonnet' | 'opus';
-  artifacts: Record<string, { path: string; token_count: number; version: number }>;
+  artifacts: Record<string, { path: string; token_count: number; version: number; created_at?: string; agent?: string }>;
 }
 
 // WebSocket event types

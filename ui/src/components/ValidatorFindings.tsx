@@ -2,6 +2,7 @@ import type { Finding, FindingSeverity } from '../types';
 
 interface ValidatorFindingsProps {
   findings: Finding[];
+  overrides: Record<string, boolean>;
   onOverrideChange: (id: string, overridden: boolean) => void;
 }
 
@@ -27,7 +28,7 @@ const STATUS_LABEL: Record<string, string> = {
   new_discovery: 'Discovery',
 };
 
-export function ValidatorFindings({ findings, onOverrideChange }: ValidatorFindingsProps) {
+export function ValidatorFindings({ findings, overrides, onOverrideChange }: ValidatorFindingsProps) {
   const sorted = [...findings].sort((a, b) => {
     return SEVERITY_ORDER.indexOf(a.severity) - SEVERITY_ORDER.indexOf(b.severity);
   });
@@ -54,7 +55,7 @@ export function ValidatorFindings({ findings, onOverrideChange }: ValidatorFindi
             <label style={styles.overrideLabel}>
               <input
                 type="checkbox"
-                checked={finding.override ?? false}
+                checked={overrides[finding.id] ?? false}
                 onChange={(e) => onOverrideChange(finding.id, e.target.checked)}
                 style={{ marginRight: 4 }}
               />
@@ -144,4 +145,4 @@ const styles = {
   },
 };
 
-export default ValidatorFindings;
+

@@ -75,7 +75,7 @@ function extractRoutesFromFile(
   const routes: RouteEntry[] = [];
 
   // Track variable name → import file mapping for router composition
-  const importMap = new Map<string, string>();
+  const importMap = new Map<string, string | null>();
   // Track variable name → prefix from app.use(prefix, var)
   const routerPrefixes = new Map<string, string>();
 
@@ -91,8 +91,6 @@ function extractRoutesFromFile(
           importMap.set(binding.name.text, resolveImportPath(filePath, moduleSpec));
         }
       }
-      // CommonJS require
-      if (ts.isVariableStatement(node)) { /* handled below */ }
     }
 
     // const router = require('./routes/foo')
@@ -123,25 +121,6 @@ function extractRoutesFromFile(
   function scanNode(node: ts.Node): void {
     if (ts.isCallExpression(node)) {
       const expr = node.expression;
-
-      // app.METHOD(path, ...) — top-level
-      if (
-        ts.isPropertyAccessExpression(expr) &&
-        HTTP_METHODS.includes(expr.name.text as HttpMethod) &&
-        node.arguments.length >= 1 &&
-        node.arguments[0] !== undefined &&
-        ts.isStringLiteral(node.arguments[0])
-      ) {
-        const method = expr.name.text as HttpMethod;
-        const routePath = (node.arguments[0] as ts.StringLiteral).text;
-        const { line } = sourceFile.getLineAndCharacterOfPosition(node.getStart());
-        routes.push({
-          method,
-          path: normalizePath(prefix + routePath),
-          file: filePath,
-          line: line + 1,
-        });
-      }
 
       // app.use(prefix, router) — one level of composition
       if (
@@ -175,13 +154,28 @@ function extractRoutesFromFile(
             message: `Could not trace router import for "${routerName}" at line ${line + 1} — verify this route is covered by the OpenAPI spec.`,
           });
         }
-      }
-
-      // router.METHOD(path, ...) — within a composition file
-      if (
+      } else if (
+        // router.METHOD(path, ...) — within a composition file
         ts.isPropertyAccessExpression(expr) &&
         HTTP_METHODS.includes(expr.name.text as HttpMethod) &&
         ts.isIdentifier(expr.expression) &&
+        node.arguments.length >= 1 &&
+        node.arguments[0] !== undefined &&
+        ts.isStringLiteral(node.arguments[0])
+      ) {
+        const method = expr.name.text as HttpMethod;
+        const routePath = (node.arguments[0] as ts.StringLiteral).text;
+        const { line } = sourceFile.getLineAndCharacterOfPosition(node.getStart());
+        routes.push({
+          method,
+          path: normalizePath(prefix + routePath),
+          file: filePath,
+          line: line + 1,
+        });
+      } else if (
+        // app.METHOD(path, ...) — top-level (must be last to avoid matching router.METHOD)
+        ts.isPropertyAccessExpression(expr) &&
+        HTTP_METHODS.includes(expr.name.text as HttpMethod) &&
         node.arguments.length >= 1 &&
         node.arguments[0] !== undefined &&
         ts.isStringLiteral(node.arguments[0])
@@ -204,7 +198,7 @@ function extractRoutesFromFile(
   return routes;
 }
 
-function resolveImportPath(fromFile: string, importSpec: string): string {
+function resolveImportPath(fromFile: string, importSpec: string): string | null {
   if (!importSpec.startsWith('.')) return importSpec;
   const dir = path.dirname(fromFile);
   const candidate = path.resolve(dir, importSpec);
@@ -212,7 +206,7 @@ function resolveImportPath(fromFile: string, importSpec: string): string {
   for (const ext of ['.ts', '.js', '/index.ts', '/index.js']) {
     if (fs.existsSync(candidate + ext)) return candidate + ext;
   }
-  return candidate + '.ts';
+  return null;  // unresolvable — let callers emit an unresolved_import finding
 }
 
 // ─── Main entry ───────────────────────────────────────────────────────────────

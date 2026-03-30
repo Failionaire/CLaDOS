@@ -50,8 +50,32 @@ describe('POST /users', () => {
 
 Write a `tests/integration/helpers.ts` that:
 1. Reads `base_url` and auth config from `test-context.json`
-2. Obtains an auth token before tests run using the `obtain_token` instructions
-3. Exports `baseUrl` and `authToken` for use across test files
+2. Exports a `getAuthToken()` factory function that obtains a fresh token on each call — not a module-level singleton
+3. Exports `baseUrl` for use across test files
+
+Example helpers.ts:
+```typescript
+import testContext from '../../.clados/02-build/test-context.json';
+import request from 'supertest';
+
+export const baseUrl = testContext.base_url;
+
+export async function getAuthToken(): Promise<string> {
+  const res = await request(baseUrl)
+    .post('/auth/login')
+    .send(testContext.auth.test_credentials);
+  return res.body.token;
+}
+```
+
+In each test file, call `getAuthToken()` inside `beforeAll`:
+```typescript
+describe('POST /users', () => {
+  let authToken: string;
+  beforeAll(async () => { authToken = await getAuthToken(); });
+  // ...
+});
+```
 
 ### If `{{project_type}}` is `full-stack`:
 
@@ -97,6 +121,15 @@ For Supertest projects:
 For Playwright projects:
 - `playwright.config.ts`
 - `tests/e2e/*.spec.ts` (one file per feature area)
+
+## Data isolation
+
+Every test file that creates resources must clean them up. Use one of:
+
+1. **`afterAll` deletion:** After the suite runs, delete all resources created during the suite via the DELETE endpoints.
+2. **Unique per-run data:** Generate unique identifiers using timestamps or UUIDs: `` email: `test-${Date.now()}@example.com` ``
+
+Prefer option 2 for simplicity. Do not assume the database is reset between runs.
 
 ## Constraints
 

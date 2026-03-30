@@ -130,7 +130,7 @@
       "system_prompt": "agents/docs.md",
       "default_model": "claude-sonnet-4-20250514",
       "escalation_model": "claude-opus-4-20250514",
-      "tools": ["read_file", "write_file"],
+      "tools": ["read_file", "write_file", "list_files"],
       "enabled_when": "always",
       "context_artifacts": [
         { "artifact": "01-prd.md",          "type": "reference" },

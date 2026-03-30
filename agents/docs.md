@@ -34,9 +34,9 @@ Match the structure of `01-api-spec.yaml` but update:
 
 Write to: `03-api-spec-draft.yaml`
 
-### Step 3: Produce `docs/README.md`
+### Step 3: Produce `README.md`
 
-Write a complete README. Include:
+Write a complete README at the project root. Include:
 
 ```markdown
 # {Project Name}

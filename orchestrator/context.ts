@@ -1,21 +1,22 @@
 import fs from 'fs';
 import path from 'path';
 import Anthropic from '@anthropic-ai/sdk';
-import type { ArtifactInjectionType, ContextArtifact } from './types.js';
+import type { ContextArtifact } from './types.js';
 import type { Logger } from './logger.js';
+import { SONNET_MODEL, HAIKU_MODEL } from './escalation.js';
 
 // ─── Tree-sitter AST extraction ───────────────────────────────────────────────
 
 // Lazily initialised — tree-sitter requires a native addon compile; skip gracefully if unavailable.
-let _tsParser: unknown | null = null;
+let _tsParser: TsParser | null = null;
 let _tsParserAttempted = false;
 
-function getTypeScriptParser(): unknown | null {
+function getTypeScriptParser(): TsParser | null {
   if (_tsParserAttempted) return _tsParser;
   _tsParserAttempted = true;
   try {
     // eslint-disable-next-line @typescript-eslint/no-var-requires
-    const Parser = require('tree-sitter') as { new(): { setLanguage(l: unknown): void; parse(s: string): { rootNode: TsNode } } };
+    const Parser = require('tree-sitter') as { new(): TsParser };
     // eslint-disable-next-line @typescript-eslint/no-var-requires
     const TypeScript = (require('tree-sitter-typescript') as { typescript: unknown }).typescript;
     const parser = new Parser();
@@ -34,13 +35,18 @@ interface TsNode {
   startPosition: { row: number; column: number };
 }
 
+interface TsParser {
+  setLanguage(l: unknown): void;
+  parse(s: string): { rootNode: TsNode };
+}
+
 /**
  * Extract exported declarations from a TypeScript file using tree-sitter.
  * Returns a compact string listing exports with their signatures.
  * Falls back to empty string if tree-sitter is unavailable or parsing fails.
  */
 export function extractTypeScriptExports(content: string): string {
-  const parser = getTypeScriptParser() as { parse(s: string): { rootNode: TsNode } } | null;
+  const parser = getTypeScriptParser();
   if (!parser) return '';
   try {
     const tree = parser.parse(content);
@@ -67,6 +73,8 @@ export function extractTypeScriptExports(content: string): string {
 const TOKEN_FALLBACK_CHARS_PER_TOKEN = 3.5;
 const CONTEXT_TOKEN_LIMIT = 80_000;
 const CHARS_PREVIEW = 300;
+// Compressed previews are ~300 chars of content + header; ~86 tokens at 3.5 chars/token, rounded up.
+const COMPRESSED_TOKEN_ESTIMATE = 100;
 
 export interface ResolvedArtifact {
   key: string;
@@ -86,7 +94,7 @@ export async function estimateTokens(
 ): Promise<number> {
   try {
     const result = await anthropic.beta.messages.countTokens({
-      model: 'claude-sonnet-4-20250514',
+      model: SONNET_MODEL,
       messages: [{ role: 'user', content: text }],
     });
     return result.input_tokens;
@@ -114,7 +122,7 @@ export async function summarizeFile(
 
   try {
     const msg = await anthropic.messages.create({
-      model: 'claude-haiku-3-5-20241022',
+      model: HAIKU_MODEL,
       max_tokens: 120,
       messages: [
         {
@@ -171,16 +179,28 @@ export async function resolveContextArtifacts(
   compressionNeeded: boolean;
   fullFetchPaths: string[];
 }> {
-  const loaded: Array<ContextArtifact & { content: string; tokenCount: number }> = [];
+  type LoadedArtifact = ContextArtifact & { content: string; tokenCount: number };
 
-  for (const artifact of artifacts) {
-    const fullPath = path.join(claDosDir, artifact.artifact);
-    if (!fs.existsSync(fullPath)) continue;
+  const loadResults = await Promise.all(
+    artifacts.map(async (artifact): Promise<LoadedArtifact | null> => {
+      const fullPath = path.join(claDosDir, artifact.artifact);
+      let content: string;
+      try {
+        content = await fs.promises.readFile(fullPath, 'utf-8');
+      } catch (e) {
+        // M-10: Required artifacts must exist; missing ones indicate a pipeline logic error
+        if ((e as NodeJS.ErrnoException).code !== 'ENOENT') throw e;
+        if (artifact.type === 'required') {
+          throw new Error(`Required artifact missing: ${artifact.artifact} (expected at ${fullPath})`);
+        }
+        return null;
+      }
+      const tokenCount = await estimateTokens(content, anthropic, logger);
+      return { ...artifact, content, tokenCount };
+    })
+  );
 
-    const content = await fs.promises.readFile(fullPath, 'utf-8');
-    const tokenCount = await estimateTokens(content, anthropic, logger);
-    loaded.push({ ...artifact, content, tokenCount });
-  }
+  const loaded = loadResults.filter((r): r is LoadedArtifact => r !== null);
 
   let totalTokens = loaded.reduce((s, a) => s + a.tokenCount, 0);
 
@@ -226,8 +246,8 @@ export async function resolveContextArtifacts(
       } else {
         logger.warn('context.summarizer_cap', `Summarizer budget cap reached for ${a.artifact} — using truncation`);
         const compressed = compressToPreview(a.artifact, a.content);
-        resolved.push({ key: a.artifact, content: compressed, tokenCount: 100, compressed: true });
-        totalTokens += 100;
+        resolved.push({ key: a.artifact, content: compressed, tokenCount: COMPRESSED_TOKEN_ESTIMATE, compressed: true });
+        totalTokens += COMPRESSED_TOKEN_ESTIMATE;
       }
     } else {
       resolved.push({ key: a.artifact, content: a.content, tokenCount: a.tokenCount, compressed: false });
@@ -249,9 +269,9 @@ export async function resolveContextArtifacts(
     if (!a.compressed && totalTokens + a.tokenCount > CONTEXT_TOKEN_LIMIT) {
       const originalContent = loaded.find((l) => l.artifact === a.key)?.content ?? a.content;
       const compressed = compressToPreview(a.key, originalContent);
-      resolved2.push({ key: a.key, content: compressed, tokenCount: 100, compressed: true });
+      resolved2.push({ key: a.key, content: compressed, tokenCount: COMPRESSED_TOKEN_ESTIMATE, compressed: true });
       fullFetchPaths.push(a.key);
-      totalTokens += 100;
+      totalTokens += COMPRESSED_TOKEN_ESTIMATE;
     } else {
       resolved2.push(a);
       totalTokens += a.tokenCount;
@@ -271,6 +291,15 @@ export function injectVariables(
   let result = promptText;
   for (const [key, value] of Object.entries(variables)) {
     result = result.replaceAll(`{{${key}}}`, value);
+  }
+  // H-13: Remove only unreplaced placeholders (keys absent from variables) so models don't
+  // misinterpret {{...}} syntax. Scans the original template rather than the substituted result
+  // to avoid stripping {{...}} patterns that arrived via injected variable values.
+  for (const match of promptText.matchAll(/\{\{([^}]+)\}\}/g)) {
+    const key = match[1]!;
+    if (!(key in variables)) {
+      result = result.replaceAll(`{{${key}}}`, '');
+    }
   }
   return result;
 }
@@ -298,7 +327,7 @@ export function passesStructuralMarkerTest(content: string, ext: string): boolea
     case '.json': {
       if (!/^\s*\{/.test(normalized)) return false;
       try {
-        return Object.keys(JSON.parse(normalized.match(/^\s*\{[\s\S]*/)?.[0] ?? '{}')).length > 0;
+        return Object.keys(JSON.parse(normalized)).length > 0;
       } catch {
         return false;
       }

@@ -22,15 +22,18 @@ Generate deployment infrastructure for the project. Write all files using `write
 FROM node:20-alpine AS builder
 WORKDIR /app
 COPY package*.json ./
-RUN npm ci --only=production
+RUN npm ci
 COPY . .
 RUN npm run build
 
 FROM node:20-alpine
+RUN addgroup -S app && adduser -S app -G app
 WORKDIR /app
+COPY package*.json ./
+RUN npm ci --omit=dev
 COPY --from=builder /app/dist ./dist
-COPY --from=builder /app/node_modules ./node_modules
 ENV NODE_ENV=production
+USER app
 EXPOSE 3000
 HEALTHCHECK --interval=30s --timeout=10s CMD wget -qO- http://localhost:3000/health || exit 1
 CMD ["node", "dist/index.js"]
@@ -47,7 +50,6 @@ JWT_SECRET=replace-with-a-random-256-bit-secret
 
 **`infra/docker-compose.yml`** — Local development environment (NOT the test compose file):
 ```yaml
-version: '3.8'
 services:
   app:
     build: .
@@ -86,8 +88,18 @@ jobs:
       - uses: actions/setup-node@v4
         with: { node-version: '20' }
       - run: npm ci
+      - name: Start test services
+        run: docker compose -f infra/docker-compose.test.yml up -d
+      - name: Wait for services to be healthy
+        run: |
+          timeout 60 bash -c 'until docker compose -f infra/docker-compose.test.yml ps | grep -q "healthy"; do sleep 2; done'
       - run: npm test
+      - name: Tear down services
+        if: always()
+        run: docker compose -f infra/docker-compose.test.yml down
 ```
+
+If the project has no database, omit the docker compose steps. Read `01-architecture.md` to determine whether a database service is present.
 
 **`docs/runbook.md`** — Operational runbook:
 ```markdown

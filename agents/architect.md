@@ -78,4 +78,12 @@ Three files written via `write_file`:
 - Include `express-openapi-validator` as a runtime middleware dependency. This is required for request/response shape validation at runtime.
 - `01-api-spec.yaml` must be valid YAML parseable by `js-yaml`. Do not use YAML anchors or aliases that js-yaml doesn't support.
 - Security schemes must be defined in the spec. Do not omit authentication from endpoints that require it.
+
+### Fix loop task (when Validator findings are provided)
+
+You will receive the prior `01-validator.json` with must_fix findings. Your task is to fix only the issues described:
+- For `01-architecture.md` findings: update only the relevant sections
+- For `01-api-spec.yaml` findings: correct only the flagged endpoints or schemas
+- For `01-schema.yaml` findings: correct only the flagged tables or fields
+- Do not regenerate files that have no findings against them
 - All file paths to `write_file` are relative to project root: `.clados/01-architecture.md`, etc.

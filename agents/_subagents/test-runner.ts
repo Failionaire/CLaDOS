@@ -82,7 +82,9 @@ function spawnProcess(
 ): ChildProcess {
   return spawn(cmd, args, {
     cwd,
-    env: { ...env },  // Only .env.test — isolated from parent process env
+    // Server inherits PATH (needed to find the node binary) plus .env.test vars only.
+    // Notably, ANTHROPIC_API_KEY and other CLaDOS secrets from the parent process are excluded.
+    env: { ...env },
     stdio: ['ignore', 'pipe', 'pipe'],
   });
 }
@@ -124,8 +126,12 @@ function parseTapLikeOutput(stdout: string): {
   failures: Array<{ test: string; message: string }>;
 } {
   // Attempt to parse standard Jest/Vitest JSON output (--json flag)
+  // Extract the JSON object from stdout — Jest may write progress text before the JSON
   try {
-    const json = JSON.parse(stdout) as {
+    const jsonStart = stdout.indexOf('{');
+    const jsonEnd = stdout.lastIndexOf('}');
+    const jsonStr = jsonStart >= 0 && jsonEnd > jsonStart ? stdout.slice(jsonStart, jsonEnd + 1) : stdout;
+    const json = JSON.parse(jsonStr) as {
       numTotalTests?: number;
       numPassedTests?: number;
       numFailedTests?: number;
@@ -167,6 +173,41 @@ function parseTapLikeOutput(stdout: string): {
   };
 }
 
+function parsePlaywrightJsonOutput(stdout: string): ReturnType<typeof parseTapLikeOutput> {
+  try {
+    const jsonStart = stdout.indexOf('{');
+    const jsonEnd = stdout.lastIndexOf('}');
+    const jsonStr = jsonStart >= 0 && jsonEnd > jsonStart ? stdout.slice(jsonStart, jsonEnd + 1) : stdout;
+    const json = JSON.parse(jsonStr) as {
+      stats?: { expected?: number; unexpected?: number; skipped?: number };
+      suites?: Array<{
+        specs?: Array<{
+          title: string;
+          tests?: Array<{ results?: Array<{ status: string; error?: { message: string } }> }>;
+        }>;
+      }>;
+    };
+    const failures: Array<{ test: string; message: string }> = [];
+    for (const suite of json.suites ?? []) {
+      for (const spec of suite.specs ?? []) {
+        for (const test of spec.tests ?? []) {
+          for (const result of test.results ?? []) {
+            if (result.status === 'failed' || result.status === 'unexpected') {
+              failures.push({ test: spec.title, message: result.error?.message ?? '' });
+            }
+          }
+        }
+      }
+    }
+    const passed = json.stats?.expected ?? 0;
+    const failed = json.stats?.unexpected ?? 0;
+    const skipped = json.stats?.skipped ?? 0;
+    return { total: passed + failed + skipped, passed, failed, skipped, failures };
+  } catch {
+    return { total: 0, passed: 0, failed: 0, skipped: 0, failures: [] };
+  }
+}
+
 // ─── Main entry ───────────────────────────────────────────────────────────────
 
 export async function runTestRunner(
@@ -191,8 +232,8 @@ export async function runTestRunner(
   let dockerStarted = false;
 
   try {
-    // Step 1: npm install
-    const installResult = await runCommand('npm', ['install'], projectDir, { ...process.env as Record<string, string>, ...env });
+    // Step 1: npm install (use hostEnv — PATH-only + .env.test — to avoid leaking CLaDOS secrets to postinstall scripts)
+    const installResult = await runCommand('npm', ['install'], projectDir, hostEnv);
     if (installResult.code !== 0) {
       throw new Error(`npm install failed:\n${installResult.stderr}`);
     }
@@ -218,7 +259,18 @@ export async function runTestRunner(
           'docker', ['compose', '-f', dockerComposePath, 'ps', '--format', 'json'],
           projectDir, hostEnv, 10_000,
         );
-        if (health.stdout.includes('"healthy"') || health.stdout.includes('(healthy)')) break;
+        // Parse JSON health output properly to avoid false matches (e.g. container named "healthy-service")
+        let dockerHealthy = false;
+        try {
+          const containers = JSON.parse(health.stdout) as Array<{ Health?: string; State?: string }>;
+          dockerHealthy = Array.isArray(containers) && containers.length > 0 && containers.every(
+            (c) => c.Health === 'healthy' || (!c.Health && c.State === 'running'),
+          );
+        } catch {
+          // Fall back to string check for older Compose versions
+          dockerHealthy = health.stdout.includes('"healthy"') || health.stdout.includes('(healthy)');
+        }
+        if (dockerHealthy) break;
         if (Date.now() + DOCKER_HEALTH_POLL_MS > deadline) {
           throw new Error('Docker health checks timed out');
         }
@@ -248,13 +300,25 @@ export async function runTestRunner(
     const testPattern = wreckerOnly
       ? 'tests/adversarial'
       : isFullStack ? 'tests/e2e' : 'tests/integration';
-    const testArgs = ['test', '--', '--testPathPattern', testPattern, '--json'];
     const start = Date.now();
 
-    const testResult = await runCommand('npm', testArgs, projectDir, hostEnv, timeoutMs);
+    let testResult: { stdout: string; stderr: string; code: number };
+    let parsed: ReturnType<typeof parseTapLikeOutput>;
+
+    if (isFullStack && !wreckerOnly) {
+      // Playwright uses its own CLI with a JSON reporter
+      const playwrightArgs = ['exec', 'playwright', 'test', testPattern, '--reporter=json'];
+      testResult = await runCommand('npx', playwrightArgs, projectDir, hostEnv, timeoutMs);
+      parsed = parsePlaywrightJsonOutput(testResult.stdout);
+    } else {
+      // Jest / Supertest
+      const jestArgs = ['test', '--', '--testPathPattern', testPattern, '--json'];
+      testResult = await runCommand('npm', jestArgs, projectDir, hostEnv, timeoutMs);
+      parsed = parseTapLikeOutput(testResult.stdout);
+    }
+
     const duration = Date.now() - start;
 
-    const parsed = parseTapLikeOutput(testResult.stdout);
     const passed = testResult.code === 0 || parsed.failed === 0;
 
     const result: TestRunnerResult = {
@@ -282,6 +346,8 @@ export async function runTestRunner(
         total: result.total,
         passed_count: result.passed_count,
         failed_count: result.failed_count,
+        skipped_count: result.skipped_count,
+        duration_ms: result.duration_ms,
         failures: result.failures,
       }};
       await writeFileAtomic(outputPath, JSON.stringify(merged, null, 2), { encoding: 'utf8' });
