@@ -28,8 +28,8 @@ function requireEnv(key: string): string {
 function printUsage(): void {
   console.log(`
 Usage:
-  npx clados new <project-name>      Create a new project and start the pipeline
-  npx clados resume <project-name>   Resume a stopped or crashed project
+  node bin/clados.js new <project-name>      Create a new project and start the pipeline
+  node bin/clados.js resume <project-name>   Resume a stopped or crashed project
 `);
 }
 

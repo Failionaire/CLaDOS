@@ -14,7 +14,8 @@
     "sourceMap": true,
     "skipLibCheck": true,
     "forceConsistentCasingInFileNames": true,
-    "noUncheckedIndexedAccess": true
+    "noUncheckedIndexedAccess": true,
+    "types": ["node"]
   },
   "include": ["orchestrator/**/*.ts", "agents/_subagents/**/*.ts"],
   "exclude": ["node_modules", "dist", "ui"]
