@@ -66,11 +66,18 @@ export function createExpressApp(ctx: ServerContext): ReturnType<typeof createSe
    */
   app.get('/project/artifact', async (req: Request, res: Response, next: NextFunction) => {
     try {
-      const relPath = req.query['path'] as string;
+      let relPath = req.query['path'] as string;
       if (!relPath) {
         res.status(400).json({ error: 'path query param required' });
         return;
       }
+      
+      // If the client explicitly includes the .clados/ folder prefix in the request, strip it
+      // since claDosDir already terminates inside .clados
+      if (relPath.startsWith('.clados/') || relPath.startsWith('.clados\\')) {
+        relPath = relPath.substring(8);
+      }
+
       const claDosDir = path.join(ctx.projectDir, '.clados');
       const filePath = path.resolve(claDosDir, relPath);
       // Security: use path.relative to guard against path traversal + Windows case-insensitivity (H-9)

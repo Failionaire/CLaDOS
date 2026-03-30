@@ -143,7 +143,12 @@ export function Gate({ gate, onClose }: GateProps) {
       ? '#d29922'
       : '#8b949e';
 
-  const mustFixCount = findings.filter((f) => f.severity === 'must_fix' && !overrides[f.id]).length;
+  // Only unresolved or partially_resolved 'must_fix' findings block approval
+  const mustFixCount = findings.filter((f) => 
+    f.severity === 'must_fix' && 
+    f.status !== 'resolved' && 
+    !overrides[f.id]
+  ).length;
   const approveBlocked = mustFixCount > 0;
 
   // Wide view: 40% artifact + 30% revision + 30% findings
@@ -191,6 +196,11 @@ export function Gate({ gate, onClose }: GateProps) {
         )}
 
         <div style={styles.actions}>
+          {approveBlocked && (
+            <span style={styles.blockingIndicator}>
+              ⚠ {mustFixCount} {mustFixCount === 1 ? 'issue' : 'issues'} to resolve
+            </span>
+          )}
           <button
             style={{ ...styles.approveBtn, opacity: approveBlocked ? 0.4 : 1 }}
             disabled={approveBlocked}
@@ -258,6 +268,13 @@ export function Gate({ gate, onClose }: GateProps) {
               </div>
             )}
           </div>
+          <button
+            style={styles.hideBtn}
+            onClick={onClose}
+            title="Hide this panel (does not approve or reject)"
+          >
+            × Hide
+          </button>
         </div>
       </div>
 
@@ -366,6 +383,16 @@ const styles = {
     marginLeft: 'auto',
     display: 'flex',
     gap: 8,
+    alignItems: 'center',
+  },
+  blockingIndicator: {
+    color: '#d29922',
+    fontSize: 13,
+    fontWeight: 600,
+    marginRight: 8,
+    display: 'flex',
+    alignItems: 'center',
+    gap: 4,
   },
   approveBtn: {
     background: '#1a2e1a',
@@ -394,6 +421,17 @@ const styles = {
     fontSize: 12,
     borderBottom: '1px solid #f85149',
   },
+  hideBtn: {
+    background: 'transparent',
+    border: '1px solid #484f58',
+    color: '#8b949e',
+    borderRadius: 6,
+    padding: '5px 12px',
+    fontSize: 13,
+    fontWeight: 500,
+    cursor: 'pointer',
+    marginLeft: 8,
+  },
   body: {
     display: 'flex',
     flex: 1,
@@ -401,12 +439,13 @@ const styles = {
     gap: 8,
     padding: '8px 12px',
     overflow: 'hidden',
-    flexWrap: 'wrap' as const,
+    flexWrap: 'nowrap' as const,
   },
   pane: {
     display: 'flex',
     flexDirection: 'column' as const,
     minHeight: 0,
+    height: '100%',
     border: '1px solid #30363d',
     borderRadius: 6,
     overflow: 'hidden',

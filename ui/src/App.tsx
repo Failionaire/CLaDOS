@@ -38,7 +38,8 @@ export default function App() {
 
     if (lastEvent.type === 'gate:open') {
       setCurrentGate(lastEvent);
-      setGateVisible(true);
+      // We no longer automatically pop the gate open to avoid interrupting the user.
+      // The user must click the "Gate X ↑" button in the Topbar to open it.
     } else if (lastEvent.type === 'budget:gate') {
       const suggested = (lastEvent.current_spend_usd + lastEvent.projected_cost_usd * 2).toFixed(2);
       setNewCapInput(suggested);
