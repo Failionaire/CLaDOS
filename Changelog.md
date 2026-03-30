@@ -6,6 +6,66 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ---
 
+## [1.0.0-alpha.3] — 2026-03-30
+
+UI additions, bug fixes, and a full gate review overhaul. No spec changes.
+
+### Added
+
+#### UI
+- **`SetupScreen.tsx`** *(new)* — Phase 0 setup form rendered inside the browser UI instead of purely in the CLI; collects idea, project type, optional agent toggles, and spend cap; submits to `POST /project/start` and renders inline validation errors
+- **`ActivityLog.tsx`** *(new)* — live event stream panel below the Kanban board; displays all WebSocket events in chronological order with phase/agent context
+- **`ArtifactSidebar.tsx`** *(new)* — slide-in panel (600 px, fixed right) that lists every generated artifact from `SessionState.artifacts` and renders the selected file via `ArtifactViewer`; toggled by a "Files" button in the Topbar
+- **`ui/src/index.css`** *(new)* — global design token variables and shared utility classes (reconnection banner, budget band, cost tooltip, agent card animations)
+- **Gate "Your feedback" middle column** — 3-column layout placeholder for the upcoming structured Q&A pane; revision textarea pinned to the bottom of the column
+
+#### Orchestrator
+- `POST /budget/abort` endpoint — allows the UI to abandon the pipeline when blocked on a budget gate (previously only cap-raise was available)
+- `Conductor.resendPendingEventsTo(ws)` — replays the current `gate:open` or `budget:gate` event to newly connected WebSocket clients so they see a pending gate on reconnect without requiring a full state reload
+- `handleBudgetAbort()` — resolves the budget gate promise with `false`, sets `pipeline_status` to `abandoned`, and throws `PIPELINE_ABANDONED` to cleanly stop the pipeline
+
+#### Docs
+- `docs/User-Guide.md` — user-facing guide covering installation, project creation, the gate review flow, and crash recovery
+- `docs/Test-Projects.md` — reference list of sample projects used for manual testing
+- `docs/Testing-Plan.md` — structured test plan covering CLI, pipeline phases, and UI interactions
+
+### Changed
+
+#### UI
+- **`Gate.tsx`**: Complete rewrite from a bottom drawer to a centered floating modal overlay
+  - `position: fixed` overlay with `rgba(0,0,0,0.35)` dim; clicking the overlay or the `─` button minimizes to the Topbar pill (gate state preserved)
+  - 3-column CSS grid body (`1fr 1.1fr 1fr`): Left = generated artifact + filename chip, Middle = feedback/questions pane + revision textarea, Right = findings
+  - Removed drag-to-resize handle and all associated state, refs, and resize event listener
+  - `onMinimize` prop added (hides modal, keeps `currentGate` alive in App); `onClose` only called on a successful gate response
+  - Phase 2 guardrail: Approve button intercepts unresolved `should_fix`/`suggestion` findings (excluding already-resolved ones) and shows a `window.confirm` before dispatching
+  - `mustFixCount` filter now also excludes `status === 'resolved'` findings, not just overridden ones
+  - `─` / `✕` header icon buttons both minimize; clicking the overlay also closes the More dropdown before minimizing
+  - More menu now opens downward (`top: 110%`) instead of upward
+  - Revision badge text changed to "Revision N of 3 before Opus escalation"
+  - "Restart this phase" action added to the More dropdown
+  - `flexWrap` on the body changed from `wrap` to `nowrap`; pane `height: '100%'` added to fix panel scrolling
+  - Blocking indicator ("⚠ N issues to resolve") added to the toolbar when `must_fix` findings are unresolved
+  - Gate no longer auto-opens on `gate:open` WebSocket event — user must click the Topbar button
+- **`Topbar.tsx`**: Gate review button restyled to orange rounded pill (`#FAEEDA` / `#854F0B` / `#EF9F27`) with "⚠ Gate N — review" label; `onToggleSidebar` / `sidebarOpen` props added; "Files" toggle button added; cost breakdown hover tooltip shows per-phase spend
+- **`KanbanBoard.tsx`**: Full-stack Phase 2 now renders `engineer-backend` and `engineer-frontend` cards instead of the generic `engineer` card; `blankCard` helper extracted to avoid duplication
+- **`App.tsx`**: `ArtifactSidebar` integrated with toggle state; `paddingTop: 48px` added to main container to account for fixed topbar; budget gate "Stop" button wired to `POST /budget/abort`; budget gate cap-raise input pre-populated with a suggested value; `onMinimize` prop plumbed through to `Gate`
+
+#### Orchestrator
+- **`conductor.ts`**: All `agent:start`, `agent:done`, `agent:error`, `agent:stream`, and `agent:skipped` broadcasts now use `errorKey ?? role` so full-stack engineer variants (`engineer-backend`, `engineer-frontend`) are identified correctly in the UI; dispatch log line now includes input/context token counts; `budgetGateResolve` signature changed to `(shouldContinue: boolean) => void`; `currentGateEvent` and `currentBudgetGateEvent` fields cache the last broadcast gate event and are cleared on resolution; WIP file handle is closed before `writeFileAtomic` and re-opened afterward to prevent Windows file-locking permission errors
+- **`budget.ts`**: `MODEL_PRICES` table is no longer hardcoded — prices are loaded at startup from `agent-registry.json` via `initModelPrices()`; eliminates the risk of model IDs and prices diverging between the registry and the budget module
+- **`context.ts`**: Model strings for token counting and summarization are no longer imported from `escalation.ts`; set at startup via `initContextModels()` to match whatever the registry declares
+- **`agent-registry.json`**: Model IDs updated to current Anthropic API identifiers; `utility_models` block added (`conductor`, `token_counter`, `summarizer`); `model_prices` block added so pricing is co-located with model declarations
+- **`server.ts`**: `GET /project/artifact` strips a leading `.clados/` prefix from the client-supplied path before resolving, fixing artifact load failures when the client includes the subdirectory in the key
+
+#### Agent prompts
+- `agents/devops.md`, `agents/docs.md`: Output schema sections added (were missing, causing startup validation errors)
+
+#### Build
+- `tsconfig.json`: `@types/node` added to `types` array for correct language-service resolution; `ignoreDeprecations` corrected from `"6.0"` to `"5.0"`
+- `orchestrator/cli.ts`: CLI usage message corrected
+
+---
+
 ## [1.0.0-alpha.2] — 2026-03-29
 
 Correctness and hardening pass across the entire codebase. No new user-facing features; all changes close concrete bugs or tighten implementation fidelity against the v1 spec.

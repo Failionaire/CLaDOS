@@ -132,7 +132,7 @@ export function Topbar({ sessionState, connectionStatus, onFocusGate, hasPending
           {/* Gate review button */}
           {hasPendingGate && (
             <button style={styles.gateBtn} onClick={onFocusGate}>
-              Gate {gateNumber} ↑
+              ⚠ Gate {gateNumber} — review
             </button>
           )}
 
@@ -273,13 +273,13 @@ const styles = {
     cursor: 'default',
   },
   gateBtn: {
-    background: '#3b2800',
-    color: '#d29922',
-    border: '1px solid #d29922',
-    borderRadius: 6,
-    padding: '4px 12px',
-    fontSize: 12,
-    fontWeight: 600,
+    background: '#FAEEDA',
+    color: '#854F0B',
+    border: '1px solid #EF9F27',
+    borderRadius: 20,
+    padding: '3px 10px',
+    fontSize: 11,
+    fontWeight: 500,
     cursor: 'pointer',
   } as React.CSSProperties,
   costTooltip: {

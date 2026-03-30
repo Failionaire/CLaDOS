@@ -94,6 +94,9 @@ export default function App() {
         onRetry={handleRetry}
         onSkip={handleSkip}
         focusMode={focusMode}
+        onOpenGate={() => {
+          if (currentGate) setGateVisible(true);
+        }}
       />
 
       <ActivityLog events={events} />
@@ -111,6 +114,7 @@ export default function App() {
       {gateVisible && currentGate && (
         <Gate
           gate={currentGate}
+          onMinimize={() => setGateVisible(false)}
           onClose={() => {
             setGateVisible(false);
             setCurrentGate(null);

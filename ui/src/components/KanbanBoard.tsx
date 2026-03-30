@@ -9,6 +9,7 @@ interface KanbanBoardProps {
   onRetry: (phase: number, agent: string, errorKey?: string) => void;
   onSkip: (phase: number, agent: string, errorKey?: string) => void;
   focusMode: boolean;
+  onOpenGate?: () => void;
 }
 
 const PHASE_AGENTS: Record<number, string[]> = {
@@ -87,7 +88,7 @@ function buildCardsFromSnapshot(state: SessionState): Record<string, AgentCardSt
   return result;
 }
 
-export function KanbanBoard({ sessionState, events, onRetry, onSkip, focusMode }: KanbanBoardProps) {
+export function KanbanBoard({ sessionState, events, onRetry, onSkip, focusMode, onOpenGate }: KanbanBoardProps) {
   const [collapsed, setCollapsed] = useState<Record<number, boolean>>(() => {
     try {
       const saved = localStorage.getItem('clados:collapsed');
@@ -237,6 +238,7 @@ export function KanbanBoard({ sessionState, events, onRetry, onSkip, focusMode }
                     card={card}
                     onRetry={card.status === 'error' ? () => onRetry(card.phase, card.role, card.errorKey) : undefined}
                     onSkip={card.status === 'error' && card.isSkippable ? () => onSkip(card.phase, card.role, card.errorKey) : undefined}
+                    onOpenGate={onOpenGate}
                   />
                 ))}
               </div>

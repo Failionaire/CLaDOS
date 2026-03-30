@@ -1,44 +1,28 @@
-import { useState, useEffect, useRef, useCallback } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import { ArtifactViewer } from './ArtifactViewer';
 import { ValidatorFindings } from './ValidatorFindings';
 import type { Finding, WsGateOpen } from '../types';
 
 interface GateProps {
   gate: WsGateOpen | null;
+  onMinimize: () => void;
   onClose: () => void;
 }
 
 type GateAction = 'approve' | 'revise' | 'goto' | 'abort';
-type GateTab = 'artifact' | 'revision';
-
-const MIN_HEIGHT = 200;
-const DEFAULT_HEIGHT = 380;
-const STORAGE_KEY = 'clados:gate-height';
 
 const REVISION_WARN_THRESHOLD = 2;
 const REVISION_ERROR_THRESHOLD = 3;
 
-export function Gate({ gate, onClose }: GateProps) {
-  const [height, setHeight] = useState(() => {
-    try { return parseInt(localStorage.getItem(STORAGE_KEY) ?? '', 10) || DEFAULT_HEIGHT; }
-    catch { return DEFAULT_HEIGHT; }
-  });
+export function Gate({ gate, onMinimize, onClose }: GateProps) {
   const [artifactContent, setArtifactContent] = useState<string>('');
   const [findings, setFindings] = useState<Finding[]>([]);
   const [overrides, setOverrides] = useState<Record<string, boolean>>({});
   const [revisionNote, setRevisionNote] = useState('');
-  const [activeTab, setActiveTab] = useState<GateTab>('artifact');
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [moreOpen, setMoreOpen] = useState(false);
   const [gotoTarget, setGotoTarget] = useState<number>(1);
-  const [dragHandleHovered, setDragHandleHovered] = useState(false);
-  const [narrowView, setNarrowView] = useState(() => window.innerWidth < 1100);
-  const dragStartY = useRef<number | null>(null);
-  const dragStartH = useRef<number>(DEFAULT_HEIGHT);
-  const liveHeightRef = useRef(height);
-  const dragMoveRef = useRef<((e: MouseEvent) => void) | null>(null);
-  const dragEndRef = useRef<(() => void) | null>(null);
 
   // Reset state when gate changes
   useEffect(() => {
@@ -47,7 +31,6 @@ export function Gate({ gate, onClose }: GateProps) {
     setRevisionNote('');
     setError(null);
     setMoreOpen(false);
-    setActiveTab('artifact');
     setFindings(gate.findings ?? []);
     const primaryArtifact = gate.artifacts[0];
     if (!primaryArtifact) {
@@ -68,19 +51,6 @@ export function Gate({ gate, onClose }: GateProps) {
       })
       .finally(() => setLoading(false));
   }, [gate]);
-
-  useEffect(() => {
-    const handler = () => setNarrowView(window.innerWidth < 1100);
-    window.addEventListener('resize', handler);
-    return () => window.removeEventListener('resize', handler);
-  }, []);
-
-  useEffect(() => {
-    return () => {
-      if (dragMoveRef.current) window.removeEventListener('mousemove', dragMoveRef.current);
-      if (dragEndRef.current) window.removeEventListener('mouseup', dragEndRef.current);
-    };
-  }, []);
 
   const handleOverrideChange = (id: string, checked: boolean) => {
     setOverrides((prev) => ({ ...prev, [id]: checked }));
@@ -107,33 +77,6 @@ export function Gate({ gate, onClose }: GateProps) {
     }
   }, [gate, revisionNote, overrides, onClose]);
 
-  // Drag-to-resize — closures captured at drag-start so add/remove references are always stable
-  const onDragStart = (e: React.MouseEvent) => {
-    dragStartY.current = e.clientY;
-    dragStartH.current = height;
-
-    const move = (ev: MouseEvent) => {
-      const delta = dragStartY.current! - ev.clientY;
-      const newH = Math.max(MIN_HEIGHT, dragStartH.current + delta);
-      setHeight(newH);
-      liveHeightRef.current = newH;
-    };
-
-    const end = () => {
-      window.removeEventListener('mousemove', move);
-      window.removeEventListener('mouseup', end);
-      dragMoveRef.current = null;
-      dragEndRef.current = null;
-      try { localStorage.setItem(STORAGE_KEY, String(liveHeightRef.current)); } catch {}
-    };
-
-    dragMoveRef.current = move;
-    dragEndRef.current = end;
-    window.addEventListener('mousemove', move);
-    window.addEventListener('mouseup', end);
-    e.preventDefault();
-  };
-
   if (!gate) return null;
 
   const revisionCount = gate.revision_count;
@@ -143,81 +86,75 @@ export function Gate({ gate, onClose }: GateProps) {
       ? '#d29922'
       : '#8b949e';
 
-  // Only unresolved or partially_resolved 'must_fix' findings block approval
-  const mustFixCount = findings.filter((f) => 
-    f.severity === 'must_fix' && 
-    f.status !== 'resolved' && 
+  // must_fix findings block approval
+  const mustFixCount = findings.filter((f) =>
+    f.severity === 'must_fix' &&
+    f.status !== 'resolved' &&
     !overrides[f.id]
   ).length;
   const approveBlocked = mustFixCount > 0;
 
-  // Wide view: 40% artifact + 30% revision + 30% findings
-  // Narrow view: 58% left (artifact or revision tab) + 40% findings
-  const artifactPaneWidth = narrowView ? 'calc(58% - 4px)' : 'calc(40% - 4px)';
-  const revisionPaneWidth = narrowView ? 'calc(58% - 4px)' : 'calc(30% - 4px)';
-  const findingsPaneWidth = narrowView ? 'calc(42% - 4px)' : 'calc(30% - 4px)';
+  // should_fix / suggestion findings that are unresolved and haven't been overridden trigger a warning confirm
+  const nonBlockingUnaddressed = findings.filter((f) =>
+    (f.severity === 'should_fix' || f.severity === 'suggestion') &&
+    f.status !== 'resolved' &&
+    !overrides[f.id]
+  ).length;
+
+  const handleApprove = () => {
+    if (approveBlocked) return;
+    if (nonBlockingUnaddressed > 0) {
+      const confirmed = window.confirm(
+        `You have ${nonBlockingUnaddressed} unaddressed recommendation${nonBlockingUnaddressed === 1 ? '' : 's'}. Approving now will pass these unresolved choices into the next phase. Are you sure you want to proceed?`
+      );
+      if (!confirmed) return;
+    }
+    sendGateResponse('approve');
+  };
 
   return (
-    <div style={{ ...styles.drawer, height }}>
-      {/* Drag handle */}
-      <div
-        style={{ ...styles.dragHandle, ...(dragHandleHovered ? { background: '#30363d' } : {}) }}
-        onMouseDown={onDragStart}
-        onMouseEnter={() => setDragHandleHovered(true)}
-        onMouseLeave={() => setDragHandleHovered(false)}
-        title="Drag to resize"
-      />
+    <div style={styles.overlay} onClick={() => { setMoreOpen(false); onMinimize(); }}>
+      <div style={styles.modal} onClick={(e) => e.stopPropagation()}>
 
-      <div style={styles.toolbar}>
-        <span style={styles.gateTitle}>
-          Gate {gate.gate_number} — Phase {gate.phase}
-          <span style={{ ...styles.revisionBadge, color: revisionColor }}>
-            {' '}· Revision {revisionCount} of 3 before Opus escalation
-          </span>
-          {gate.next_phase_cost_estimate && (
-            <span style={styles.costEstimate}>
-              {' '}· Next phase: {gate.next_phase_cost_estimate}
-            </span>
-          )}
-        </span>
-
-        {/* Narrow view: tabs toggle between Artifact and Revision; Findings always shown */}
-        {narrowView && (
-          <div style={styles.tabBar}>
-            <button
-              style={{ ...styles.tab, ...(activeTab === 'artifact' ? styles.tabActive : {}) }}
-              onClick={() => setActiveTab('artifact')}
-            >Artifact</button>
-            <button
-              style={{ ...styles.tab, ...(activeTab === 'revision' ? styles.tabActive : {}) }}
-              onClick={() => setActiveTab('revision')}
-            >Revision</button>
+        {/* Modal header */}
+        <div style={styles.modalHeader}>
+          <div style={{ flexShrink: 0 }}>
+            <div style={styles.modalTitle}>
+              Gate {gate.gate_number} — Phase {gate.phase} review
+            </div>
+            <div style={styles.modalSub}>
+              <span style={{ color: revisionColor }}>
+                Revision {revisionCount} of 3 before Opus escalation
+              </span>
+              {gate.next_phase_cost_estimate && (
+                <span> · Next phase: <span style={{ color: '#3fb950' }}>{gate.next_phase_cost_estimate}</span></span>
+              )}
+            </div>
           </div>
-        )}
 
-        <div style={styles.actions}>
+          <div style={{ flex: 1 }} />
+
           {approveBlocked && (
             <span style={styles.blockingIndicator}>
               ⚠ {mustFixCount} {mustFixCount === 1 ? 'issue' : 'issues'} to resolve
             </span>
           )}
+
           <button
             style={{ ...styles.approveBtn, opacity: approveBlocked ? 0.4 : 1 }}
             disabled={approveBlocked}
-            onClick={() => sendGateResponse('approve')}
+            onClick={handleApprove}
             title={approveBlocked ? `${mustFixCount} must-fix finding(s) need overrides or resolution` : 'Approve and continue'}
           >
             Approve →
           </button>
+
           <button style={styles.reviseBtn} onClick={() => sendGateResponse('revise')}>
             ↺ Revise
           </button>
+
           <div style={styles.moreWrapper}>
-            <button
-              style={styles.moreBtn}
-              onClick={() => setMoreOpen((v) => !v)}
-              title="More options"
-            >
+            <button style={styles.moreBtn} onClick={() => setMoreOpen((v) => !v)}>
               ⚠ More
             </button>
             {moreOpen && (
@@ -268,23 +205,24 @@ export function Gate({ gate, onClose }: GateProps) {
               </div>
             )}
           </div>
-          <button
-            style={styles.hideBtn}
-            onClick={onClose}
-            title="Hide this panel (does not approve or reject)"
-          >
-            × Hide
-          </button>
+
+          <button style={styles.iconBtn} onClick={onMinimize} title="Minimize">─</button>
+          <button style={styles.iconBtn} onClick={onMinimize} title="Close">✕</button>
         </div>
-      </div>
 
-      {error && <div style={styles.error}>{error}</div>}
+        {error && <div style={styles.error}>{error}</div>}
 
-      <div style={styles.body}>
-        {/* Artifact pane: visible on wide view, or narrow view when artifact tab is active */}
-        {(!narrowView || activeTab === 'artifact') && (
-          <div style={{ ...styles.pane, width: artifactPaneWidth }}>
-            <div style={styles.paneLabel}>{gate.artifacts[0] ?? ''}</div>
+        {/* 3-column body */}
+        <div style={styles.modalBody}>
+
+          {/* Left: Generated document */}
+          <div style={styles.pane}>
+            <div style={styles.paneHeaderArea}>
+              <div style={styles.paneLabel}>Generated document</div>
+              {gate.artifacts[0] && (
+                <div style={styles.filenameChip}>{gate.artifacts[0]}</div>
+              )}
+            </div>
             <div style={styles.paneScroll}>
               {loading
                 ? <div style={styles.loading}>Loading…</div>
@@ -292,27 +230,37 @@ export function Gate({ gate, onClose }: GateProps) {
               }
             </div>
           </div>
-        )}
 
-        {/* Revision pane: always visible on wide view; on narrow, shown when revision tab active */}
-        {(!narrowView || activeTab === 'revision') && (
-          <div style={{ ...styles.pane, width: revisionPaneWidth }}>
-            <div style={styles.paneLabel}>Revision note</div>
-            <textarea
-              style={styles.revisionTextarea}
-              placeholder="Describe what needs to change…"
-              value={revisionNote}
-              onChange={(e) => setRevisionNote(e.target.value)}
-            />
+          {/* Middle: Your feedback */}
+          <div style={{ ...styles.pane, borderLeft: '1px solid #30363d', borderRight: '1px solid #30363d' }}>
+            <div style={styles.paneHeaderArea}>
+              <div style={styles.paneLabel}>Your feedback</div>
+            </div>
+            <div style={styles.paneScroll}>
+              <p style={styles.questionsPlaceholder}>
+                No structured questions yet — the PM or Architect will surface open questions here in a future revision.
+              </p>
+            </div>
+            <div style={styles.revisionArea}>
+              <textarea
+                style={styles.revisionTextarea}
+                placeholder="Add a general note or instruction for the next revision…"
+                value={revisionNote}
+                onChange={(e) => setRevisionNote(e.target.value)}
+              />
+            </div>
           </div>
-        )}
 
-        {/* Findings pane: always visible */}
-        <div style={{ ...styles.pane, width: findingsPaneWidth }}>
-          <div style={styles.paneLabel}>Findings ({findings.length})</div>
-          <div style={styles.paneScroll}>
-            <ValidatorFindings findings={findings} overrides={overrides} onOverrideChange={handleOverrideChange} />
+          {/* Right: Findings */}
+          <div style={styles.pane}>
+            <div style={styles.paneHeaderArea}>
+              <div style={styles.paneLabel}>Findings ({findings.length})</div>
+            </div>
+            <div style={styles.paneScroll}>
+              <ValidatorFindings findings={findings} overrides={overrides} onOverrideChange={handleOverrideChange} />
+            </div>
           </div>
+
         </div>
       </div>
     </div>
@@ -320,99 +268,120 @@ export function Gate({ gate, onClose }: GateProps) {
 }
 
 const styles = {
-  drawer: {
+  overlay: {
     position: 'fixed' as const,
-    bottom: 0,
+    top: 48,
     left: 0,
     right: 0,
-    background: '#161b22',
-    borderTop: '2px solid #30363d',
+    bottom: 0,
+    background: 'rgba(0,0,0,0.35)',
     zIndex: 200,
     display: 'flex',
+    alignItems: 'flex-start',
+    justifyContent: 'center',
+    padding: 24,
+  },
+  modal: {
+    background: '#161b22',
+    border: '1px solid #EF9F27',
+    borderRadius: 8,
+    width: '100%',
+    maxHeight: 'calc(100vh - 120px)',
+    display: 'flex',
     flexDirection: 'column' as const,
+    boxShadow: '0 8px 32px rgba(0,0,0,0.5)',
+    overflow: 'hidden',
   },
-  dragHandle: {
-    height: 6,
-    cursor: 'ns-resize',
-    background: 'transparent',
-    borderBottom: '1px solid #30363d',
-    flexShrink: 0,
-  },
-  toolbar: {
+  modalHeader: {
     display: 'flex',
     alignItems: 'center',
-    gap: 12,
-    padding: '6px 16px',
-    borderBottom: '1px solid #21262d',
-    flexShrink: 0,
-  },
-  gateTitle: {
-    fontWeight: 600,
-    fontSize: 13,
-    color: '#e6edf3',
-  },
-  revisionBadge: {
-    fontSize: 12,
-    fontWeight: 400,
-  },
-  costEstimate: {
-    fontSize: 12,
-    fontWeight: 400,
-    color: '#3fb950',
-  },
-  tabBar: {
-    display: 'flex',
-    gap: 4,
-    flex: 1,
-  },
-  tab: {
-    background: 'transparent',
-    border: '1px solid #30363d',
-    color: '#8b949e',
-    borderRadius: 4,
-    padding: '3px 10px',
-    fontSize: 12,
-    cursor: 'pointer',
-  } as React.CSSProperties,
-  tabActive: {
-    color: '#e6edf3',
-    borderColor: '#58a6ff',
-    background: '#1f3a5c',
-  } as React.CSSProperties,
-  actions: {
-    marginLeft: 'auto',
-    display: 'flex',
     gap: 8,
-    alignItems: 'center',
+    padding: '10px 16px',
+    borderBottom: '1px solid #30363d',
+    background: 'rgba(239,159,39,0.05)',
+    flexShrink: 0,
   },
-  blockingIndicator: {
-    color: '#d29922',
-    fontSize: 13,
+  modalTitle: {
     fontWeight: 600,
-    marginRight: 8,
+    fontSize: 13,
+    color: '#d29922',
+  },
+  modalSub: {
+    fontSize: 11,
+    color: '#8b949e',
+    marginTop: 2,
+  },
+  modalBody: {
+    display: 'grid',
+    gridTemplateColumns: '1fr 1.1fr 1fr',
+    flex: 1,
+    minHeight: 0,
+    overflow: 'hidden',
+  },
+  pane: {
     display: 'flex',
-    alignItems: 'center',
-    gap: 4,
+    flexDirection: 'column' as const,
+    minHeight: 0,
+    overflow: 'hidden',
   },
-  approveBtn: {
-    background: '#1a2e1a',
-    border: '1px solid #3fb950',
-    color: '#3fb950',
-    borderRadius: 6,
-    padding: '5px 16px',
-    fontSize: 13,
-    fontWeight: 600,
-    cursor: 'pointer',
+  paneHeaderArea: {
+    flexShrink: 0,
+    borderBottom: '1px solid #30363d',
   },
-  reviseBtn: {
-    background: '#3b2800',
-    border: '1px solid #d29922',
-    color: '#d29922',
-    borderRadius: 6,
-    padding: '5px 16px',
+  paneLabel: {
+    padding: '6px 12px',
+    fontSize: 11,
+    fontWeight: 500,
+    color: '#8b949e',
+    textTransform: 'uppercase' as const,
+    letterSpacing: '0.05em',
+    background: '#21262d',
+  },
+  filenameChip: {
+    padding: '4px 12px',
+    fontSize: 11,
+    color: '#8b949e',
+    fontFamily: 'monospace',
+    background: '#0d1117',
+    borderTop: '1px solid #21262d',
+  },
+  paneScroll: {
+    flex: 1,
+    overflowY: 'auto' as const,
+    minHeight: 0,
+  },
+  questionsPlaceholder: {
+    margin: 0,
+    padding: '14px 14px',
+    fontSize: 12,
+    color: '#484f58',
+    fontStyle: 'italic',
+    lineHeight: 1.55,
+  },
+  revisionArea: {
+    flexShrink: 0,
+    borderTop: '1px solid #30363d',
+    padding: 8,
+  },
+  revisionTextarea: {
+    width: '100%',
+    background: '#0d1117',
+    border: '1px solid #30363d',
+    color: '#e6edf3',
+    fontSize: 12,
+    padding: '8px 10px',
+    resize: 'none' as const,
+    outline: 'none',
+    fontFamily: 'inherit',
+    lineHeight: 1.5,
+    borderRadius: 4,
+    height: 72,
+    boxSizing: 'border-box' as const,
+  },
+  loading: {
+    padding: 16,
+    color: '#8b949e',
     fontSize: 13,
-    fontWeight: 600,
-    cursor: 'pointer',
   },
   error: {
     background: '#3b1219',
@@ -420,83 +389,67 @@ const styles = {
     padding: '6px 16px',
     fontSize: 12,
     borderBottom: '1px solid #f85149',
-  },
-  hideBtn: {
-    background: 'transparent',
-    border: '1px solid #484f58',
-    color: '#8b949e',
-    borderRadius: 6,
-    padding: '5px 12px',
-    fontSize: 13,
-    fontWeight: 500,
-    cursor: 'pointer',
-    marginLeft: 8,
-  },
-  body: {
-    display: 'flex',
-    flex: 1,
-    minHeight: 0,
-    gap: 8,
-    padding: '8px 12px',
-    overflow: 'hidden',
-    flexWrap: 'nowrap' as const,
-  },
-  pane: {
-    display: 'flex',
-    flexDirection: 'column' as const,
-    minHeight: 0,
-    height: '100%',
-    border: '1px solid #30363d',
-    borderRadius: 6,
-    overflow: 'hidden',
-  },
-  paneLabel: {
-    padding: '4px 10px',
-    fontSize: 11,
-    color: '#8b949e',
-    background: '#21262d',
-    borderBottom: '1px solid #30363d',
-    fontFamily: 'monospace',
     flexShrink: 0,
   },
-  paneScroll: {
-    flex: 1,
-    overflowY: 'auto' as const,
+  blockingIndicator: {
+    color: '#d29922',
+    fontSize: 12,
+    fontWeight: 600,
+    display: 'flex',
+    alignItems: 'center',
+    gap: 4,
+    flexShrink: 0,
   },
-  loading: {
-    padding: 16,
+  approveBtn: {
+    background: '#1a2e1a',
+    border: '1px solid #3fb950',
+    color: '#3fb950',
+    borderRadius: 6,
+    padding: '5px 14px',
+    fontSize: 12,
+    fontWeight: 600,
+    cursor: 'pointer',
+    flexShrink: 0,
+  },
+  reviseBtn: {
+    background: '#2d1e00',
+    border: '1px solid #d29922',
+    color: '#d29922',
+    borderRadius: 6,
+    padding: '5px 14px',
+    fontSize: 12,
+    fontWeight: 600,
+    cursor: 'pointer',
+    flexShrink: 0,
+  },
+  iconBtn: {
+    background: 'transparent',
+    border: '1px solid #30363d',
     color: '#8b949e',
+    borderRadius: 4,
+    padding: '4px 8px',
     fontSize: 13,
-  },
-  revisionTextarea: {
-    flex: 1,
-    width: '100%',
-    background: '#0d1117',
-    border: 'none',
-    color: '#e6edf3',
-    fontSize: 13,
-    padding: 10,
-    resize: 'none' as const,
-    outline: 'none',
-    fontFamily: 'inherit',
-    lineHeight: 1.5,
-  },
+    cursor: 'pointer',
+    lineHeight: 1,
+    flexShrink: 0,
+  } as React.CSSProperties,
   moreWrapper: {
     position: 'relative' as const,
+    flexShrink: 0,
   },
   moreBtn: {
     background: '#21262d',
     border: '1px solid #6e7681',
     color: '#d29922',
     borderRadius: 6,
-    padding: '5px 12px',
+    padding: '5px 10px',
     fontSize: 12,
     fontWeight: 600,
     cursor: 'pointer',
   },
   moreMenu: {
     position: 'absolute' as const,
-    bottom: '110%',
+    top: '110%',
     right: 0,
     background: '#161b22',
     border: '1px solid #30363d',
@@ -507,6 +460,7 @@ const styles = {
     display: 'flex',
     flexDirection: 'column' as const,
     gap: 6,
+    boxShadow: '0 4px 16px rgba(0,0,0,0.4)',
   },
   moreMenuSection: {
     fontSize: 11,
@@ -545,5 +499,4 @@ const styles = {
     marginTop: 4,
   } as React.CSSProperties,
 };
-
 

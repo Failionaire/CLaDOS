@@ -4,6 +4,7 @@ interface AgentCardProps {
   card: AgentCardState;
   onRetry?: () => void;
   onSkip?: () => void;
+  onOpenGate?: () => void;
 }
 
 const BADGE_LABEL: Record<string, string> = {
@@ -29,7 +30,7 @@ const AGENT_ICONS: Record<string, { icon: string, short: string }> = {
   devops: { icon: 'icon-cd', short: 'CD' },
 };
 
-export function AgentCard({ card, onRetry, onSkip }: AgentCardProps) {
+export function AgentCard({ card, onRetry, onSkip, onOpenGate }: AgentCardProps) {
   const isGateCard = card.role === 'validator';
   const roleDisplay = card.role.replace('-', ' ');
   const cssSafeStatus = card.status === 'retrying' ? 'running retrying' : card.status;
@@ -38,9 +39,15 @@ export function AgentCard({ card, onRetry, onSkip }: AgentCardProps) {
   const iconData = AGENT_ICONS[card.role] || { icon: 'icon-pm', short: 'AI' };
 
   if (isGateCard) {
+    const isFlagged = card.status === 'flagged';
     return (
-      <div className={`gate-card gate-${card.status === 'flagged' ? 'active' : card.status === 'pending' ? 'pending' : 'approved'}`}>
-        {card.status === 'flagged' ? 'Review required' : card.status === 'done' ? 'Gate approved' : 'Gate pending'}
+      <div 
+        className={`gate-card gate-${isFlagged ? 'active' : card.status === 'pending' ? 'pending' : 'approved'}`}
+        onClick={isFlagged ? onOpenGate : undefined}
+        style={isFlagged ? { cursor: 'pointer' } : {}}
+        title={isFlagged ? 'Click to open review gate' : undefined}
+      >
+        {isFlagged ? 'Review required' : card.status === 'done' ? 'Gate approved' : 'Gate pending'}
       </div>
     );
   }
