@@ -32,26 +32,20 @@ npm run build:all
 ```bash
 # macOS / Linux
 export ANTHROPIC_API_KEY=sk-ant-...
-node bin/clados.js new my-project
+node bin/clados.js
 
 # Windows PowerShell
 $env:ANTHROPIC_API_KEY = "sk-ant-..."
-node bin/clados.js new my-project
+node bin/clados.js
 ```
 
-This creates `./my-project/`, starts a local server on a port between 3100–3199, and opens the UI in your browser. From there everything is driven through the web interface.
-
-To come back to a project later:
-
-```bash
-node bin/clados.js resume my-project
-```
+This starts a local server on a port between 3100–3199 and opens the UI in your browser. The **home screen** lets you create a new project or pick up an existing one — no subcommands needed. From there everything is driven through the web interface.
 
 ### Optional: add `clados` to your PATH
 
 ```bash
 npm link
-# Now you can use: clados new my-project
+# Now you can use: clados
 ```
 
 ### Cost

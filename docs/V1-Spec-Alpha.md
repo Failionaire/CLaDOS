@@ -38,21 +38,26 @@ This is the buildable spec for CLaDOS v1. Everything in this document ships. Any
 
 ## Startup and invocation
 
-CLaDOS is invoked as a Node.js CLI via `node`:
+CLaDOS is invoked as a Node.js CLI via `node` with no subcommands:
 
 ```
-node clados new my-project     # creates {cwd}/my-project/.clados/, starts pipeline
-node clados resume my-project  # resumes a stopped/crashed project
+node bin/clados.js
 ```
 
-`clados new {name}` does the following:
-1. Creates the project directory `{name}/` under the current working directory
+`node bin/clados.js` does the following:
+1. Validates `ANTHROPIC_API_KEY` is set; exits with an error message if not
+2. Starts the Express server on a random available port (probes 3100–3199; first free port wins)
+3. Opens the system default browser at `http://localhost:{port}`
+4. Presents the **home screen** — the project picker UI
+
+**Home screen — create a new project:**  
+The user fills in: project name, free-text idea, project type, optional agent toggles (Security, Wrecker), and an optional spend cap. Submitting calls `POST /projects/create`, which:
+1. Creates the directory `{name}/` under the working directory CLaDOS was launched from
 2. Initializes `.clados/` with a fresh `00-session-state.json` (`pipeline_status: "idle"`)
-3. Starts the Express server on a random available port (probes 3100–3199; first free port wins)
-4. Opens the system default browser at `http://localhost:{port}`
-5. Presents the Phase 0 setup screen
+3. Starts the pipeline and broadcasts a `state:snapshot` WebSocket event so the UI transitions immediately to the Kanban board
 
-`clados resume {name}` reads the existing `00-session-state.json`, starts the server, opens the browser, and restores state per the crash recovery rules.
+**Home screen — resume an existing project:**  
+The home screen calls `GET /projects/list` on load, which scans the working directory for subdirectories containing `.clados/00-session-state.json` and returns each project's name, `pipeline_status`, and timestamps sorted by most-recently-updated. The user selects a project and clicks **Open →**, which calls `POST /projects/open`. This loads the saved state, wires the Conductor, and resumes the pipeline (skipping the loop for projects already `complete` or `abandoned`). A `state:snapshot` event transitions the UI to the Kanban board.
 
 **The UI is served by the orchestrator's Express server** — a single process hosts both the REST/WebSocket API and the static SPA build (from `ui/dist/`). There is no separate Vite dev server in production usage. During development of CLaDOS itself, contributors run the Vite dev server (port 5173) with a proxy to the orchestrator — this is a contributor concern, not user-facing. There is no `clados dev` command.
 
@@ -68,13 +73,14 @@ The Conductor drives agents through a fixed 5-phase sequence. Each phase ends wi
 
 ### Phase 0 — Concept
 
-**Setup screen inputs:**
-1. Describe your idea (free text)
-2. Project type (backend-only, full-stack, CLI tool, library)
-3. Agent loadout — toggle optional agents:
+**Home screen inputs (collected when creating a new project):**
+1. Project name (used as the directory name)
+2. Describe your idea (free text)
+3. Project type (backend-only, full-stack, CLI tool, library)
+4. Agent loadout — toggle optional agents:
    - Security (on/off, default off)
    - Wrecker (on/off, default off)
-4. Spend cap (optional, dollar amount)
+5. Spend cap (optional, dollar amount)
 
 **Agents:**
 1. **PM Agent** — takes the raw idea and writes a one-page concept document (`00-concept.md`). Scope, intent, key constraints, what it must not do.
@@ -219,8 +225,8 @@ These are hardcoded defaults in `agent-registry.json`. When Anthropic releases n
 **`enabled_when` — v1 mechanism:**
 The full condition DSL is out of scope for v1. In v1, `enabled_when` accepts exactly three string values:
 - `"always"` — agent runs in every project (PM, Architect, Engineer, QA, Validator, DevOps, Docs)
-- `"config.security"` — agent runs only if the user toggled Security on at the setup screen
-- `"config.wrecker"` — agent runs only if the user toggled Wrecker on at the setup screen
+- `"config.security"` — agent runs only if the user toggled Security on at the home screen
+- `"config.wrecker"` — agent runs only if the user toggled Wrecker on at the home screen
 
 The Conductor evaluates this with a direct lookup — no expression parser:
 ```typescript
@@ -231,7 +237,7 @@ function isAgentEnabled(enabledWhen: string, config: SessionConfig): boolean {
   throw new Error(`Unknown enabled_when value: ${enabledWhen}`);
 }
 ```
-The `SessionConfig` fields `security_enabled` and `wrecker_enabled` are set from the Phase 0 setup screen toggles and written to `00-session-state.json`. Adding a new optional agent in a future version requires adding a new `enabled_when` string and a matching config field — the pattern is intentionally rigid to avoid premature abstraction.
+The `SessionConfig` fields `security_enabled` and `wrecker_enabled` are set from the home screen toggles and written to `00-session-state.json`. Adding a new optional agent in a future version requires adding a new `enabled_when` string and a matching config field — the pattern is intentionally rigid to avoid premature abstraction.
 
 `system_prompt_tokens` is calculated once at startup via `anthropic.beta.messages.countTokens()` and cached. If the API call fails, fallback to `Math.ceil(chars / 3.5)`.
 
@@ -268,7 +274,7 @@ Missing sections → Conductor logs a configuration error at startup and refuses
 
 **Escalation triggers:**
 1. A phase has been revised 3+ times without resolving must_fix findings
-2. The project is flagged as high-complexity at the setup screen
+2. The project is flagged as high-complexity at the home screen
 
 ---
 
@@ -561,7 +567,7 @@ clados/                            ← CLaDOS installation
       ValidatorFindings.tsx
     App.tsx
 
-{project}/                         ← created by `clados new {name}`
+{project}/                         ← created by `POST /projects/create` via the home screen
   .clados/
     00-session-state.json
     run.log                        ← JSONL operational log (rotates at 10MB)

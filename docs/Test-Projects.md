@@ -60,7 +60,7 @@ Why it triggers revisions:
 
 ## Tier 3 — Optional Agent Tests (Security + Wrecker)
 
-Run these with **Security ON** and **Wrecker ON** at the setup screen.
+Run these with **Security ON** and **Wrecker ON** enabled on the home screen.
 
 ### 5. API Key Auth Service
 **Type:** backend-only  
@@ -76,6 +76,6 @@ Why it's good for Security + Wrecker:
 ## Notes on Running Tests
 
 - **Switch agent-registry.json to Haiku** before running Tier 1 and 2. See Testing-Plan.md for instructions.
-- **Save `.clados/` snapshots** after each phase completes. If a later phase breaks, you can `clados resume` from a checkpoint rather than re-running the expensive early phases.
+- **Save `.clados/` snapshots** after each phase completes. If a later phase breaks, you can restore a snapshot and re-open the project from the home screen rather than re-running the expensive early phases.
 - **Phase 0 and 1 are cheap.** Don't skip them to save cost — the concept and architecture artifacts are what the Engineer and QA agents build on. Bad inputs here produce cascading failures.
 - **Tier 1 tests are not interesting if they succeed on the first try.** The goal is to confirm the pipeline completes, not to get a perfect score. A run where the Validator flags one `should_fix` and it gets resolved on revision is a better test than a clean pass.

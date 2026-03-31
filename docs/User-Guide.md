@@ -22,23 +22,28 @@ $env:ANTHROPIC_API_KEY = "sk-ant-..."
 
 This stays in your shell session only — it is never written to disk.
 
-**2. Start a new project**
+**2. Launch CLaDOS**
 
 ```powershell
-npm clados new my-project
+node bin/clados.js
 ```
 
-CLaDOS creates `./my-project/.clados/`, starts a local web server on a port between 3100–3199, and opens your browser automatically.
+CLaDOS starts a local web server on a port between 3100–3199 and opens your browser automatically.
 
-**3. Fill in the Phase 0 setup screen**
+**3. Create or open a project on the home screen**
 
+If this is your first time, fill in the **Create** form:
+
+- **Project name** — used as the folder name (`./my-project/`); letters, numbers, hyphens, underscores only
 - **Describe your idea** — plain English, as much or as little detail as you want
 - **Project type** — backend-only, full-stack, CLI tool, or library
 - **Security agent** — toggle on if you want a threat model and dependency audit
 - **Wrecker agent** — toggle on if you want adversarial edge-case tests written against your code
 - **Spend cap** — optional dollar limit; the pipeline will pause and ask before going over
 
-Click **Start** when ready.
+Click **Create →** when ready.
+
+If you have existing projects in the current directory, they appear in the **Resume a project** dropdown at the top of the home screen. Select one and click **Open →**.
 
 ---
 
@@ -139,13 +144,13 @@ Hovering the cost total in the top bar shows a per-phase breakdown of actual spe
 
 ## Resuming After a Crash
 
-If CLaDOS stops unexpectedly (Ctrl+C, power loss, etc.):
+If CLaDOS stops unexpectedly (Ctrl+C, power loss, etc.), just launch it again:
 
 ```powershell
-npx clados resume my-project
+node bin/clados.js
 ```
 
-It reads `.clados/00-session-state.json` and resumes from where it left off:
+The home screen lists your existing projects sorted by last activity. Select the interrupted project and click **Open →**. CLaDOS reads `.clados/00-session-state.json` and resumes from where it left off:
 - If an agent was mid-run, it checks for a partial artifact in `.clados/wip/` and continues from it if the file looks structurally complete
 - If at a gate, it re-opens the gate
 - If complete or abandoned, it shows the final state
@@ -154,7 +159,7 @@ It reads `.clados/00-session-state.json` and resumes from where it left off:
 
 ## Spend Cap
 
-Set a dollar limit at the setup screen. Before every agent dispatch, CLaDOS checks whether the projected cost would exceed your remaining budget. If it would:
+Set a dollar limit on the home screen when creating your project. Before every agent dispatch, CLaDOS checks whether the projected cost would exceed your remaining budget. If it would:
 - The pipeline pauses
 - A **Budget Gate** modal appears showing the current spend, projected cost, and a field to raise the cap
 - **Allow & continue** — enter a new (higher) cap and resume
@@ -201,4 +206,4 @@ The Prototype Engineer (Phase 1) didn't generate the test infrastructure files. 
 Reload the page — if the WebSocket dropped and reconnected, the override state may be stale. The backend re-sends the full gate state on reconnect.
 
 **"Could not reconnect — restart CLaDOS to continue"**  
-The Express server process died. Run `npx clados resume my-project` to restart it.
+The Express server process died. Run `node bin/clados.js` again and use the home screen to reopen the project.

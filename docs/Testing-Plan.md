@@ -37,7 +37,7 @@ app.post('/v1/messages', (req, res) => {
 
 app.listen(4000, () => console.log('Mock Anthropic running on port 4000'));
 ```
-Run `node mock-anthropic.js` in one terminal, then start CLaDOS with `ANTHROPIC_BASE_URL=http://localhost:4000 npx clados new test-project`. This lets you stress-test the Kanban board and Conductor logic entirely for free.
+Run `node mock-anthropic.js` in one terminal, then start CLaDOS with `ANTHROPIC_BASE_URL=http://localhost:4000 node bin/clados.js`. The home screen will appear — create a project called `test-project` from there. This lets you stress-test the Kanban board and Conductor logic entirely for free.
 
 ### 3. "Hot-Swap" Session Checkpoints
 Don't rebuild the whole project from Concept (Phase 0) every time you want to test the Docs agent (Phase 3). 
@@ -58,7 +58,7 @@ Set your state to start *right at the gate* of whatever you're testing:
   }
 }
 ```
-Run `npx clados resume test-project`. CLaDOS will pick up immediately at Phase 2, allowing you to iterate on Engineer prompts without paying the PM/Architect tax of Phase 0 and 1. 
+Run `node bin/clados.js` and select `test-project` from the home screen. CLaDOS will pick up immediately at Phase 2, allowing you to iterate on Engineer prompts without paying the PM/Architect tax of Phase 0 and 1. 
 
 ### 4. Test Mechanical Subagents Locally 
 The parts of the codebase most prone to execution failure are the determinist bots: contract-validator.ts and test-runner.ts. Because these are purely TypeScript AST/Docker process wrappers, you can write simple unit tests or npm scripts calling these modules directly against dummy `src/` files. No Claude API required at all.

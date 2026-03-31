@@ -3,7 +3,7 @@ import { Topbar } from './components/Topbar';
 import { KanbanBoard } from './components/KanbanBoard';
 import { Gate } from './components/Gate';
 import { ActivityLog } from './components/ActivityLog';
-import { SetupScreen } from './components/SetupScreen';
+import { HomeScreen } from './components/HomeScreen';
 import { ArtifactSidebar } from './components/ArtifactSidebar';
 import { useWebSocket } from './hooks/useWebSocket';
 import type { WsEvent, WsGateOpen, WsBudgetGate } from './types';
@@ -73,8 +73,8 @@ export default function App() {
     }
   };
 
-  // Show setup screen when connected and pipeline hasn't started yet
-  const showSetup = connectionStatus === 'connected' && sessionState?.pipeline_status === 'idle';
+  // Show home screen when connected but no project is loaded yet
+  const showHome = connectionStatus === 'connected' && sessionState === null;
 
   return (
     <div style={{ minHeight: '100vh', display: 'flex', flexDirection: 'column', paddingTop: '48px' }}>
@@ -131,9 +131,7 @@ export default function App() {
         sessionState={sessionState} 
       />
 
-      {showSetup && (
-        <SetupScreen projectName={sessionState?.project_name ?? ''} />
-      )}
+      {showHome && <HomeScreen />}
 
       {gateVisible && currentGate && (
         <Gate
