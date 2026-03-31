@@ -105,6 +105,8 @@ export interface WsAgentDone {
   tokens_used: { input: number; output: number };
   cost_usd: number;
   context_compressed: boolean;
+  /** Number of full artifacts the agent fetched via read_file during a compressed-context run. */
+  full_artifacts_fetched: number;
 }
 
 export interface WsAgentError {
@@ -132,6 +134,10 @@ export interface WsGateOpen {
   findings: Finding[];
   revision_count: number;
   next_phase_cost_estimate: string;
+  /** Set when the gate is forced due to context-length overflow (not a normal review gate). */
+  overflow?: boolean;
+  /** Human-readable message shown when overflow is true. */
+  overflow_message?: string;
 }
 
 export interface WsBudgetGate {
@@ -172,6 +178,7 @@ export interface AgentCardState {
   artifactKey: string | null;
   errorMessage: string | null;
   contextCompressed: boolean;
+  fullArtifactsFetched: number;
   isSkippable: boolean;
   errorKey?: string;
   retryCount: number;

@@ -110,6 +110,14 @@ export interface ConductorReasoning {
   timestamp: string;
 }
 
+export interface ContextCompressionLogEntry {
+  agent: string;
+  phase: number;
+  artifact: string;
+  reason: 'reference_to_summary' | 'required_to_summary';
+  timestamp: string;
+}
+
 export interface SessionState {
   project_id: string;
   project_name: string;
@@ -130,6 +138,8 @@ export interface SessionState {
   dependency_divergences: string[];
   validator_tier: 'sonnet' | 'opus';
   token_counting_approximate: boolean;
+  /** Log of context downgrade decisions per agent dispatch. */
+  context_compression_log: ContextCompressionLogEntry[];
   artifacts: Record<string, ArtifactRecord>;
 }
 
@@ -227,6 +237,8 @@ export interface WsAgentDone {
   tokens_used: { input: number; output: number };
   cost_usd: number;
   context_compressed: boolean;
+  /** Number of full artifacts the agent fetched via read_file during a compressed-context run. */
+  full_artifacts_fetched: number;
 }
 
 export interface WsAgentError {
@@ -255,6 +267,10 @@ export interface WsGateOpen {
   findings: Finding[];
   revision_count: number;
   next_phase_cost_estimate: string;
+  /** Set when the gate is forced due to context-length overflow (not a normal review gate). */
+  overflow?: boolean;
+  /** Human-readable message shown when overflow is true. */
+  overflow_message?: string;
 }
 
 export interface WsBudgetGate {

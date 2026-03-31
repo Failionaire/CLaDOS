@@ -380,6 +380,7 @@
     .gate-card.gate-active   { background: var(--amber-bg); border: 1px solid var(--amber); color: var(--amber); cursor: pointer; transition: background 0.15s; }
     .gate-card.gate-active:hover { background: rgba(245,158,11,0.14); }
     .gate-card.gate-pending  { border: 1px dashed var(--border-dim); color: var(--text-dim); }
+    .gate-card.gate-running  { background: var(--blue-bg); border: 1px solid var(--blue); color: var(--blue); animation: gate-color-cycle 3s ease-in-out infinite; }
 
     /* ─── STREAM PREVIEW ────────────────────────────────────────── */
     .stream-preview {
@@ -731,6 +732,8 @@
     @keyframes pulse-opacity { 0%,100% { opacity: 1; } 50% { opacity: 0.35; } }
     @keyframes color-cycle   { 0%,100% { border-left-color: var(--blue); } 40% { border-left-color: var(--purple); } 70% { border-left-color: #22d3ee; } }
     @keyframes amber-pulse   { 0%,100% { border-left-color: var(--amber); } 50% { border-left-color: rgba(245,158,11,0.3); } }
+    /* Full-border cycle for gate cards (which use border shorthand, not border-left only) */
+    @keyframes gate-color-cycle { 0%,100% { border-color: var(--blue); } 40% { border-color: var(--purple); } 70% { border-color: #22d3ee; } }
 
     /* ─── SCROLLBARS ──────────────────────────────────────────────── */
     ::-webkit-scrollbar       { width: 5px; height: 5px; }

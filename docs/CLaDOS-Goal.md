@@ -66,7 +66,7 @@ Each phase column contains cards for every agent and artifact within that phase.
 
 Each agent role has a fixed icon (small inline SVG): PM = document, Architect = blueprint grid, Engineer = `</>`, Security = shield, QA = checkbox, DevOps = gear, Validator = crosshairs, Docs = book. Icons anchor identity to the card; they do not animate between phases.
 
-Gate cards show the artifact and Validator findings side by side in a **resizable drawer** (drag handle on the top border, minimum 200px, height persisted to `localStorage`). The gate header shows a **revision counter** — *"Revision 2 of 3 before Opus escalation"* — that turns amber at revision 2 and red at revision 3+. The header also shows a **pre-phase cost estimate** for the next phase: *"Next phase: ~$0.45–$1.30 depending on escalation"*, computed from stored artifact token counts and known model pricing before the gate opens.
+Gate cards show the artifact and Validator findings side by side in a **floating modal window** (fixed position, dims the board behind it; minimize to a topbar pill). The gate header shows a **revision counter** — *"Revision 2 of 3 before Opus escalation"* — that turns amber at revision 2 and red at revision 3+. The header also shows a **pre-phase cost estimate** for the next phase: *"Next phase: ~$0.45–$1.30 depending on escalation"*, computed from stored artifact token counts and known model pricing before the gate opens.
 
 Gate actions:
 - **Approve →** — primary action, proceeds to next phase
@@ -82,7 +82,7 @@ The topbar includes a **"Decisions"** chip that opens a read-only chronological 
 
 After Gate 1 is approved (concept accepted), the topbar displays a **running cost total**: *"$0.38 used"*. This is the actual spend so far, updated after each API call completes. Hovering the chip shows a per-phase breakdown of actual spend. No upfront total estimate is displayed — lower-bound estimates (e.g. "$23+") anchor user expectations and erode trust when actual costs are materially higher due to revisions and escalations. The running total gives users honest, real-time cost visibility without false precision about future spend.
 
-On viewport widths below 1400px, completed phase columns auto-collapse on initial load. Collapse state is persisted to `localStorage` per project. A **"Focus"** button in the topbar collapses all columns except the active one and the gate drawer.
+On viewport widths below 1400px, completed phase columns auto-collapse on initial load. Collapse state is persisted to `localStorage` per project. A **"Focus"** button in the topbar collapses all columns except the active one and the gate modal.
 
 The UI connects to the orchestrator over WebSocket for live streaming updates — no polling. If the WebSocket connection drops, the UI enters a reconnection loop: it retries every 5 seconds and displays a topbar banner — *"Connection lost — reconnecting…"* The banner resolves to *"Reconnected"* (green, auto-dismisses after 3 seconds) or *"Could not reconnect — restart CLaDOS to continue"* (amber, persists) after 5 failed attempts. While disconnected, all cards freeze in their last-known state; no card transitions to Error solely due to a connection drop. Plain language everywhere, no AI jargon in status messages.
 

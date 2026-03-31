@@ -1,6 +1,7 @@
 import fs from 'fs';
 import path from 'path';
 import Anthropic from '@anthropic-ai/sdk';
+import ts from 'typescript';
 import type { ContextArtifact } from './types.js';
 import type { Logger } from './logger.js';
 
@@ -49,12 +50,64 @@ interface TsParser {
   parse(s: string): { rootNode: TsNode };
 }
 
+// ─── Two-Tier AST/LSP extraction (#7) ─────────────────────────────────────────
+
 /**
- * Extract exported declarations from a TypeScript file using tree-sitter.
- * Returns a compact string listing exports with their signatures.
- * Falls back to empty string if tree-sitter is unavailable or parsing fails.
+ * Extract exported declarations from a TypeScript file.
+ * Tier 1: TypeScript compiler API (LSP) — precise signatures, exports, public methods.
+ * Tier 2: Tree-sitter fallback — partial-error-tolerant parsing for broken syntax.
  */
 export function extractTypeScriptExports(content: string): string {
+  // Tier 1: LSP via TypeScript compiler API
+  try {
+    return extractWithLsp(content);
+  } catch {
+    // Fall through to Tree-sitter if LSP fails (e.g. temporarily broken syntax)
+  }
+  // Tier 2: Tree-sitter fallback
+  return extractWithTreeSitter(content);
+}
+
+function extractWithLsp(content: string): string {
+  const sourceFile = ts.createSourceFile(
+    'input.ts',
+    content,
+    ts.ScriptTarget.Latest,
+    /* setParentNodes */ true,
+    ts.ScriptKind.TSX,
+  );
+
+  const exports: string[] = [];
+
+  function hasExportKeyword(node: ts.Node): boolean {
+    if (!ts.canHaveModifiers(node)) return false;
+    const mods = ts.getModifiers(node);
+    return mods?.some((m) => m.kind === ts.SyntaxKind.ExportKeyword) ?? false;
+  }
+
+  function visitNode(node: ts.Node): void {
+    if (ts.isExportDeclaration(node) || hasExportKeyword(node)) {
+      // Take the first non-empty line (the signature / declaration line)
+      const line = content.slice(node.getStart(sourceFile), node.getEnd())
+        .split('\n')[0]?.trim() ?? '';
+      if (line) exports.push(line.slice(0, 140));
+      // Don't recurse into export bodies — only capture the top-level declaration
+      return;
+    }
+    ts.forEachChild(node, visitNode);
+  }
+
+  ts.forEachChild(sourceFile, visitNode);
+
+  if (exports.length === 0 && sourceFile.statements.length === 0) {
+    // Empty file or parse completely failed — let Tree-sitter try
+    throw new Error('LSP produced no output');
+  }
+
+  return exports.slice(0, 30).join('\n');
+}
+
+function extractWithTreeSitter(content: string): string {
   const parser = getTypeScriptParser();
   if (!parser) return '';
   try {
@@ -62,12 +115,10 @@ export function extractTypeScriptExports(content: string): string {
     const exports: string[] = [];
 
     function walk(node: TsNode): void {
-      // export_statement wraps: export function/class/const/type/interface
       if (node.type === 'export_statement') {
-        // Take the first non-empty line (the signature)
         const firstLine = node.text.split('\n')[0]?.trim() ?? '';
         if (firstLine) exports.push(firstLine.slice(0, 140));
-        return; // don't recurse into the export body
+        return;
       }
       for (const child of node.children) walk(child);
     }
@@ -102,6 +153,7 @@ export async function estimateTokens(
   text: string,
   anthropic: Anthropic,
   logger: Logger,
+  onApproximate?: () => void,
 ): Promise<number> {
   try {
     const timeout = new Promise<never>((_, reject) =>
@@ -117,6 +169,7 @@ export async function estimateTokens(
     return result.input_tokens;
   } catch {
     logger.warn('context.token_count_fallback', 'countTokens unavailable — using char estimate');
+    onApproximate?.();
     return Math.ceil(text.length / TOKEN_FALLBACK_CHARS_PER_TOKEN);
   }
 }
@@ -191,6 +244,7 @@ export async function resolveContextArtifacts(
   logger: Logger,
   summarizerBudgetCheck?: (projectedCost: number) => boolean,
   onSummarizerCost?: (cost: number) => void,
+  onDowngradeLog?: (artifact: string, reason: 'reference_to_summary' | 'required_to_summary') => void,
 ): Promise<{
   resolved: ResolvedArtifact[];
   compressionNeeded: boolean;
@@ -257,6 +311,7 @@ export async function resolveContextArtifacts(
       if (canSummarize) {
         const summary = await summarizeFile(a.artifact, a.content, anthropic, logger);
         onSummarizerCost?.(projectedCost);
+        onDowngradeLog?.(a.artifact, 'reference_to_summary');
         const summaryTokens = Math.ceil(summary.length / TOKEN_FALLBACK_CHARS_PER_TOKEN);
         resolved.push({ key: a.artifact, content: summary, tokenCount: summaryTokens, compressed: true });
         totalTokens += summaryTokens;
@@ -276,7 +331,7 @@ export async function resolveContextArtifacts(
     return { resolved, compressionNeeded: true, fullFetchPaths: [] };
   }
 
-  // Pass 2: downgrade required → compressed, grant read_file access
+  // Pass 2: downgrade required → Haiku summary + grant read_file access (#11: use summarizeFile, not truncation)
   logger.warn('context.over_limit_pass2', `Still ${totalTokens} tokens — downgrading required artifacts`);
   const fullFetchPaths: string[] = [];
   const resolved2: ResolvedArtifact[] = [];
@@ -285,10 +340,24 @@ export async function resolveContextArtifacts(
   for (const a of resolved) {
     if (!a.compressed && totalTokens + a.tokenCount > CONTEXT_TOKEN_LIMIT) {
       const originalContent = loaded.find((l) => l.artifact === a.key)?.content ?? a.content;
-      const compressed = compressToPreview(a.key, originalContent);
-      resolved2.push({ key: a.key, content: compressed, tokenCount: COMPRESSED_TOKEN_ESTIMATE, compressed: true });
+      const estimatedInputTokens = Math.ceil(Math.min(originalContent.length, 1500) / TOKEN_FALLBACK_CHARS_PER_TOKEN);
+      const projectedCost =
+        (estimatedInputTokens / 1_000_000) * HAIKU_INPUT_PRICE_PER_M +
+        (SUMMARIZER_OUTPUT_TOKENS / 1_000_000) * HAIKU_OUTPUT_PRICE_PER_M;
+      const canSummarize = !summarizerBudgetCheck || summarizerBudgetCheck(projectedCost);
+      let summaryContent: string;
+      if (canSummarize) {
+        const prose = await summarizeFile(a.key, originalContent, anthropic, logger);
+        summaryContent = `${prose}\n[Full content available via read_file: ${a.key}]`;
+        onSummarizerCost?.(projectedCost);
+      } else {
+        summaryContent = `${compressToPreview(a.key, originalContent)}\n[Full content available via read_file: ${a.key}]`;
+      }
+      onDowngradeLog?.(a.key, 'required_to_summary');
+      const summaryTokens = Math.ceil(summaryContent.length / TOKEN_FALLBACK_CHARS_PER_TOKEN);
+      resolved2.push({ key: a.key, content: summaryContent, tokenCount: summaryTokens, compressed: true });
       fullFetchPaths.push(a.key);
-      totalTokens += COMPRESSED_TOKEN_ESTIMATE;
+      totalTokens += summaryTokens;
     } else {
       resolved2.push(a);
       totalTokens += a.tokenCount;

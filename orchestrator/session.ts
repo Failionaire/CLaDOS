@@ -56,6 +56,7 @@ export class SessionManager {
       dependency_divergences: [],
       validator_tier: 'sonnet',
       token_counting_approximate: false,
+      context_compression_log: [],
       artifacts: {},
     };
 
@@ -158,10 +159,12 @@ export class SessionManager {
     key: string,
     record: ArtifactRecord,
   ): Promise<void> {
+    // Normalize to forward slashes so keys are consistent across platforms
+    const normalizedKey = key.replace(/\\/g, '/');
     await this.mutateState(projectDir, (state) => {
-      const existingVersion = state.artifacts[key]?.version ?? 0;
+      const existingVersion = state.artifacts[normalizedKey]?.version ?? 0;
       const versioned: ArtifactRecord = { ...record, version: existingVersion + 1 };
-      return { ...state, artifacts: { ...state.artifacts, [key]: versioned } };
+      return { ...state, artifacts: { ...state.artifacts, [normalizedKey]: versioned } };
     });
   }
 
@@ -205,7 +208,9 @@ export class SessionManager {
     const srcPath = path.join(claDosDir, artifactRelPath);
 
     const state = await this.read(projectDir);
-    const version = state.artifacts[artifactRelPath]?.version ?? 1;
+    // Normalize the key before lookup so it matches the forward-slash keys stored by registerArtifact
+    const normalizedKey = artifactRelPath.replace(/\\/g, '/');
+    const version = state.artifacts[normalizedKey]?.version ?? 1;
     const ext = path.extname(artifactRelPath);
     const base = path.basename(artifactRelPath, ext);
     const dir = path.dirname(artifactRelPath);

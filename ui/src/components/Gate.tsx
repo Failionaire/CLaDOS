@@ -7,6 +7,8 @@ interface GateProps {
   gate: WsGateOpen | null;
   onMinimize: () => void;
   onClose: () => void;
+  /** Called synchronously before onClose so the board can optimistically clear the gate card. */
+  onResolved?: (phase: number, approved: boolean) => void;
 }
 
 type GateAction = 'approve' | 'revise' | 'goto' | 'abort';
@@ -14,7 +16,7 @@ type GateAction = 'approve' | 'revise' | 'goto' | 'abort';
 const REVISION_WARN_THRESHOLD = 2;
 const REVISION_ERROR_THRESHOLD = 3;
 
-export function Gate({ gate, onMinimize, onClose }: GateProps) {
+export function Gate({ gate, onMinimize, onClose, onResolved }: GateProps) {
   const [artifactContent, setArtifactContent] = useState<string>('');
   const [findings, setFindings] = useState<Finding[]>([]);
   const [overrides, setOverrides] = useState<Record<string, boolean>>({});
@@ -71,13 +73,45 @@ export function Gate({ gate, onMinimize, onClose }: GateProps) {
         }),
       });
       if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+      // Optimistically clear the gate card in the board before waiting for WS events
+      if ((action === 'approve' || action === 'revise') && gate) {
+        onResolved?.(gate.phase, action === 'approve');
+      }
       onClose();
     } catch (e) {
       setError((e as Error).message);
     }
-  }, [gate, revisionNote, overrides, onClose]);
+  }, [gate, revisionNote, overrides, onClose, onResolved]);
 
   if (!gate) return null;
+
+  // ── Overflow gate — context-length blocker ──────────────────────────────
+  if (gate.overflow) {
+    return (
+      <>
+        <div style={styles.overlay} onClick={onMinimize} />
+        <div style={styles.floatingModal}>
+          <div style={styles.modalHeader}>
+            <div style={{ fontWeight: 600, fontSize: 13, color: '#f85149' }}>Context Overflow</div>
+            <div style={{ flex: 1 }} />
+            <button style={styles.iconBtn} onClick={onMinimize} title="Minimize">─</button>
+            <button style={styles.iconBtn} onClick={onMinimize} title="Close">✕</button>
+          </div>
+          <div style={{ padding: '16px 20px', color: '#e6edf3', fontSize: 13, lineHeight: 1.6 }}>
+            {gate.overflow_message ?? "This agent's inputs are too large to process even with compression. You can simplify the inputs or stop here."}
+          </div>
+          <div style={{ padding: '0 20px 16px', display: 'flex', gap: 8 }}>
+            <button
+              style={{ ...styles.approveBtn, background: '#2d1419', borderColor: '#f85149', color: '#f85149' }}
+              onClick={() => sendGateResponse('abort')}
+            >
+              Stop project
+            </button>
+          </div>
+        </div>
+      </>
+    );
+  }
 
   const revisionCount = gate.revision_count;
   const revisionColor = revisionCount >= REVISION_ERROR_THRESHOLD
@@ -113,10 +147,12 @@ export function Gate({ gate, onMinimize, onClose }: GateProps) {
   };
 
   return (
-    <div style={styles.overlay} onClick={() => { setMoreOpen(false); onMinimize(); }}>
-      <div style={styles.modal} onClick={(e) => e.stopPropagation()}>
+    <>
+      {/* Dim overlay — click to minimize */}
+      <div style={styles.overlay} onClick={onMinimize} />
 
-        {/* Modal header */}
+      {/* Floating modal */}
+      <div style={styles.floatingModal} onClick={() => setMoreOpen(false)}>
         <div style={styles.modalHeader}>
           <div style={{ flexShrink: 0 }}>
             <div style={styles.modalTitle}>
@@ -154,11 +190,11 @@ export function Gate({ gate, onMinimize, onClose }: GateProps) {
           </button>
 
           <div style={styles.moreWrapper}>
-            <button style={styles.moreBtn} onClick={() => setMoreOpen((v) => !v)}>
+            <button style={styles.moreBtn} onClick={(e) => { e.stopPropagation(); setMoreOpen((v) => !v); }}>
               ⚠ More
             </button>
             {moreOpen && (
-              <div style={styles.moreMenu}>
+              <div style={styles.moreMenu} onClick={(e) => e.stopPropagation()}>
                 <div style={styles.moreMenuSection}>Go back to gate</div>
                 <div style={styles.moreMenuRow}>
                   <select
@@ -263,7 +299,7 @@ export function Gate({ gate, onMinimize, onClose }: GateProps) {
 
         </div>
       </div>
-    </div>
+    </>
   );
 }
 
@@ -275,21 +311,22 @@ const styles = {
     right: 0,
     bottom: 0,
     background: 'rgba(0,0,0,0.35)',
-    zIndex: 200,
-    display: 'flex',
-    alignItems: 'flex-start',
-    justifyContent: 'center',
-    padding: 24,
+    zIndex: 190,
   },
-  modal: {
+  floatingModal: {
+    position: 'fixed' as const,
+    top: 80,
+    left: 28,
+    right: 28,
+    minHeight: 480,
+    maxHeight: 'calc(100vh - 108px)',
     background: '#161b22',
     border: '1px solid #EF9F27',
     borderRadius: 8,
-    width: '100%',
-    maxHeight: 'calc(100vh - 120px)',
+    zIndex: 200,
     display: 'flex',
     flexDirection: 'column' as const,
-    boxShadow: '0 8px 32px rgba(0,0,0,0.5)',
+    boxShadow: '0 8px 32px rgba(0,0,0,0.4)',
     overflow: 'hidden',
   },
   modalHeader: {
@@ -298,7 +335,7 @@ const styles = {
     gap: 8,
     padding: '10px 16px',
     borderBottom: '1px solid #30363d',
-    background: 'rgba(239,159,39,0.05)',
+    background: 'rgba(239,159,39,0.06)',
     flexShrink: 0,
   },
   modalTitle: {

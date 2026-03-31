@@ -62,14 +62,14 @@ Every question and every answer (user or auto) is stored in `00-session-state.js
 
 **What:** Replaces V1's inline budget notification with the full expandable budget band from the mockup.
 
-The budget band sits between the drawer header and drawer body. It shows:
+The budget band sits between the modal header and modal body. It shows:
 - Current total spend vs. cap
 - Which agent would breach the cap and by how much
 - Inline field to raise the cap
 - Toggles to disable optional agents (Security, Wrecker, Refiner) for the remainder of the run
 - A note showing projected total if optional agents are disabled
 
-The band expands/collapses on click. The gate drawer content remains visible below it — the user can still review the artifact and findings while deciding on the budget.
+The band expands/collapses on click. The gate modal content remains visible below it — the user can still review the artifact and findings while deciding on the budget.
 
 **Why now:** V1's inline notification is sufficient for "yes/no, raise the cap?" but after real usage, users need the ability to make informed tradeoffs (disable an optional agent vs. raise the cap) without abandoning the pipeline.
 

@@ -20,6 +20,8 @@ export interface ServerContext {
   session: SessionManager;
   logger: Logger;
   projectDir: string;
+  /** Resolves when POST /project/new is received — signals handleNew() to start the pipeline. */
+  setupResolver?: () => void;
 }
 
 export function createExpressApp(ctx: ServerContext): ReturnType<typeof createServer> {
@@ -71,27 +73,102 @@ export function createExpressApp(ctx: ServerContext): ReturnType<typeof createSe
         res.status(400).json({ error: 'path query param required' });
         return;
       }
-      
-      // If the client explicitly includes the .clados/ folder prefix in the request, strip it
-      // since claDosDir already terminates inside .clados
+
+      const claDosDir = path.resolve(path.join(ctx.projectDir, '.clados'));
+      const projectRoot = path.resolve(ctx.projectDir);
+      let filePath: string;
+
       if (relPath.startsWith('.clados/') || relPath.startsWith('.clados\\')) {
-        relPath = relPath.substring(8);
+        // Explicit .clados/ prefix — resolve inside .clados/ with traversal guard
+        const stripped = relPath.substring(8);
+        const candidate = path.resolve(claDosDir, stripped);
+        const rel = path.relative(claDosDir, candidate);
+        if (rel.startsWith('..') || path.isAbsolute(rel)) {
+          res.status(403).json({ error: 'Forbidden' });
+          return;
+        }
+        filePath = candidate;
+      } else {
+        // No prefix: try .clados/ first (sidebar keys are relative to .clados/),
+        // then fall back to project root (agent:done artifact paths like src/index.ts).
+        const cladosCandidate = path.resolve(claDosDir, relPath);
+        const cladosRel = path.relative(claDosDir, cladosCandidate);
+        if (!cladosRel.startsWith('..') && !path.isAbsolute(cladosRel) && fs.existsSync(cladosCandidate)) {
+          filePath = cladosCandidate;
+        } else {
+          // Fall back to project root
+          const rootCandidate = path.resolve(projectRoot, relPath);
+          const rootRel = path.relative(projectRoot, rootCandidate);
+          if (rootRel.startsWith('..') || path.isAbsolute(rootRel)) {
+            res.status(403).json({ error: 'Forbidden' });
+            return;
+          }
+          filePath = rootCandidate;
+        }
       }
 
-      const claDosDir = path.join(ctx.projectDir, '.clados');
-      const filePath = path.resolve(claDosDir, relPath);
-      // Security: use path.relative to guard against path traversal + Windows case-insensitivity (H-9)
-      const relative = path.relative(path.resolve(claDosDir), filePath);
-      if (relative.startsWith('..') || path.isAbsolute(relative)) {
-        res.status(403).json({ error: 'Forbidden' });
-        return;
-      }
       if (!fs.existsSync(filePath)) {
         res.status(404).json({ error: 'Artifact not found' });
         return;
       }
       const content = await fs.promises.readFile(filePath, 'utf-8');
       res.type('text/plain').send(content);
+    } catch (err) {
+      next(err);
+    }
+  });
+
+  /**
+   * POST /project/new
+   * Body: { idea, project_type, security_enabled, wrecker_enabled, spend_cap }
+   * Accepts Phase 0 setup inputs, updates session config, and starts the pipeline.
+   */
+  app.post('/project/new', async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const {
+        idea,
+        project_type,
+        security_enabled,
+        wrecker_enabled,
+        spend_cap,
+      } = req.body as {
+        idea?: string;
+        project_type?: string;
+        security_enabled?: boolean;
+        wrecker_enabled?: boolean;
+        spend_cap?: number | null;
+      };
+
+      if (!idea || !idea.trim()) {
+        res.status(400).json({ error: 'idea is required' });
+        return;
+      }
+      const validTypes = ['backend-only', 'full-stack', 'cli-tool', 'library'];
+      if (!project_type || !validTypes.includes(project_type)) {
+        res.status(400).json({ error: `project_type must be one of: ${validTypes.join(', ')}` });
+        return;
+      }
+
+      const current = await ctx.session.read(ctx.projectDir);
+      if (current.pipeline_status !== 'idle') {
+        res.status(409).json({ error: 'Pipeline already started' });
+        return;
+      }
+
+      const config: import('./types.js').SessionConfig = {
+        project_type: project_type as import('./types.js').ProjectType,
+        idea: idea.trim(),
+        security_enabled: Boolean(security_enabled),
+        wrecker_enabled: Boolean(wrecker_enabled),
+        is_high_complexity: false,
+        spend_cap: typeof spend_cap === 'number' && spend_cap > 0 ? spend_cap : null,
+      };
+
+      await ctx.session.update(ctx.projectDir, { config });
+      res.json({ ok: true });
+
+      // Signal the CLI loop to start the pipeline now that setup is complete
+      ctx.setupResolver?.();
     } catch (err) {
       next(err);
     }

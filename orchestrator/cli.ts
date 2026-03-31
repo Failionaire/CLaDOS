@@ -5,9 +5,8 @@
 
 import path from 'path';
 import fs from 'fs';
-import readline from 'readline';
 
-import type { SessionConfig, ProjectType } from './types.js';
+import type { SessionConfig } from './types.js';
 import { SessionManager } from './session.js';
 import { Logger } from './logger.js';
 import { Conductor } from './conductor.js';
@@ -45,19 +44,24 @@ async function handleNew(projectName: string): Promise<void> {
     process.exit(1);
   }
 
-  // Collect setup inputs before creating any files — so Ctrl+C during prompts
-  // leaves no orphaned directory that blocks a subsequent `clados new`.
-  const config = await promptSetup();
-
   console.log(`\nCreating project: ${projectName}`);
   await fs.promises.mkdir(projectDir, { recursive: true });
 
+  // Initialize with a placeholder config (pipeline_status: 'idle').
+  // The real config is provided by the user through the Phase 0 setup screen via POST /project/new.
+  const placeholderConfig: SessionConfig = {
+    project_type: 'backend-only',
+    idea: '',
+    security_enabled: false,
+    wrecker_enabled: false,
+    is_high_complexity: false,
+    spend_cap: null,
+  };
+
   const session = new SessionManager();
   try {
-    await session.init(projectDir, projectName, config);
+    await session.init(projectDir, projectName, placeholderConfig);
   } catch (err) {
-    // session.init failed before any valid state was written — clean up so the
-    // user can retry `clados new` without hitting "directory already exists".
     try { await fs.promises.rm(projectDir, { recursive: true, force: true }); } catch { /* best-effort */ }
     throw err;
   }
@@ -133,7 +137,13 @@ async function startServer(
 
   await conductor.init();
 
-  const serverCtx = { conductor, session, logger, projectDir };
+  // For new projects, create a deferred promise that resolves when POST /project/new is received.
+  let setupResolve: (() => void) | undefined;
+  const setupPromise: Promise<void> | undefined = isNew
+    ? new Promise<void>((resolve) => { setupResolve = resolve; })
+    : undefined;
+
+  const serverCtx = { conductor, session, logger, projectDir, setupResolver: setupResolve };
   const httpServer = createExpressApp(serverCtx);
 
   const port = await findFreePort(3100, 3199);
@@ -178,65 +188,13 @@ async function startServer(
     }
   }
 
+  // For new projects, wait for the Phase 0 setup screen to be submitted before running.
+  if (setupPromise) {
+    console.log('Open the browser to complete project setup.');
+    await setupPromise;
+  }
+
   await runPipelineLoop(conductor, projectDir, logger);
-}
-
-// ─── Interactive setup prompt ─────────────────────────────────────────────────
-
-async function promptSetup(): Promise<SessionConfig> {
-  const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
-
-  const ask = (question: string): Promise<string> =>
-    new Promise((resolve) => rl.question(question, resolve));
-
-  console.log('\n── CLaDOS Project Setup ──────────────────────────────────────\n');
-
-  // Re-prompt until a non-empty idea is given
-  let idea = '';
-  while (!idea) {
-    idea = (await ask('Describe your project idea:\n> ')).trim();
-    if (!idea) console.log('Project idea cannot be empty. Please try again.');
-  }
-
-  console.log('\nProject type:');
-  console.log('  1. backend-only');
-  console.log('  2. full-stack');
-  console.log('  3. cli-tool');
-  console.log('  4. library');
-  const typeChoice = await ask('Select (1-4): ');
-  const projectTypes: ProjectType[] = ['backend-only', 'full-stack', 'cli-tool', 'library'];
-  const selectedType = projectTypes[parseInt(typeChoice, 10) - 1];
-  if (!selectedType) {
-    console.log('Invalid selection — defaulting to "backend-only".');
-  }
-  const projectType: ProjectType = selectedType ?? 'backend-only';
-
-  console.log('\nOptional agents (press Enter to skip):');
-  const securityRaw = await ask('Enable Security agent? (y/N): ');
-  const wreckerRaw = await ask('Enable Wrecker agent? (y/N): ');
-  const complexityRaw = await ask('Flag as high-complexity project? Escalates all agents to Opus immediately. (y/N): ');
-
-  const spendCapRaw = await ask('\nSpend cap in USD (optional, press Enter to skip): $');
-
-  rl.close();
-
-  const trimmedCap = spendCapRaw.trim();
-  const parsedCap = parseFloat(trimmedCap);
-  const spend_cap = trimmedCap && !isNaN(parsedCap) && parsedCap > 0 ? parsedCap : null;
-  if (trimmedCap && spend_cap === null) {
-    console.log('Invalid spend cap — no budget limit will be enforced.');
-  }
-
-  console.log('\n──────────────────────────────────────────────────────────────\n');
-
-  return {
-    project_type: projectType,
-    idea,
-    security_enabled: securityRaw.trim().toLowerCase() === 'y',
-    wrecker_enabled: wreckerRaw.trim().toLowerCase() === 'y',
-    is_high_complexity: complexityRaw.trim().toLowerCase() === 'y',
-    spend_cap,
-  };
 }
 
 // ─── Entry point ─────────────────────────────────────────────────────────────

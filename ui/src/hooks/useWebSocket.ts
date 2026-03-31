@@ -48,6 +48,69 @@ export function useWebSocket(): UseWebSocketReturn {
 
       if (parsed.type === 'state:snapshot') {
         setSessionState(parsed.state);
+      } else if (parsed.type === 'agent:start') {
+        // Incrementally advance current_phase and pipeline_status so the topbar
+        // updates without waiting for the next full state:snapshot.
+        setSessionState((prev) => {
+          if (!prev) return prev;
+          const newPhase = Math.max(prev.current_phase, parsed.phase);
+          // When advancing to a new phase, mark all prior phases as completed.
+          const newPhasesCompleted =
+            newPhase > prev.current_phase
+              ? [...new Set([...prev.phases_completed, ...Array.from({ length: newPhase }, (_, i) => i)])]
+              : prev.phases_completed;
+          return {
+            ...prev,
+            pipeline_status: 'agent_running',
+            current_phase: newPhase,
+            phases_completed: newPhasesCompleted,
+          };
+        });
+      } else if (parsed.type === 'agent:done') {
+        // Incrementally update running cost, per-agent token tallies, and artifact list
+        // so the topbar cost chip and the Files sidebar stay live without a full re-sync.
+        setSessionState((prev) => {
+          if (!prev) return prev;
+          const phaseKey = String(parsed.phase);
+          const prevRecord = prev.agent_tokens_used[phaseKey]?.[parsed.agent];
+          const newRecord = {
+            input: (prevRecord?.input ?? 0) + parsed.tokens_used.input,
+            output: (prevRecord?.output ?? 0) + parsed.tokens_used.output,
+            cost_usd: (prevRecord?.cost_usd ?? 0) + parsed.cost_usd,
+          };
+          // Only register artifacts whose path lives inside .clados/ — the sidebar
+          // only serves those paths and the key in sessionState.artifacts is relative
+          // to .clados/ (without the prefix).
+          let newArtifacts = prev.artifacts;
+          const artPath = parsed.artifact;
+          if (artPath.startsWith('.clados/') || artPath.startsWith('.clados\\')) {
+            const artKey = artPath.substring(8).replace(/\\/g, '/');
+            if (!prev.artifacts[artKey]) {
+              newArtifacts = {
+                ...prev.artifacts,
+                [artKey]: { path: artPath, token_count: 0, version: 1 },
+              };
+            }
+          }
+          return {
+            ...prev,
+            total_cost_usd: Math.round((prev.total_cost_usd + parsed.cost_usd) * 1_000_000) / 1_000_000,
+            agent_tokens_used: {
+              ...prev.agent_tokens_used,
+              [phaseKey]: {
+                ...(prev.agent_tokens_used[phaseKey] ?? {}),
+                [parsed.agent]: newRecord,
+              },
+            },
+            artifacts: newArtifacts,
+          };
+        });
+      } else if (parsed.type === 'gate:open') {
+        // Mark pipeline as waiting so the topbar status updates immediately.
+        setSessionState((prev) => {
+          if (!prev) return prev;
+          return { ...prev, pipeline_status: 'gate_pending' };
+        });
       }
     };
 

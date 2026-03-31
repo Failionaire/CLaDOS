@@ -1,3 +1,4 @@
+import { useState, useEffect } from 'react';
 import type { AgentCardState } from '../types';
 
 interface AgentCardProps {
@@ -35,25 +36,51 @@ export function AgentCard({ card, onRetry, onSkip, onOpenGate }: AgentCardProps)
   const roleDisplay = card.role.replace('-', ' ');
   const cssSafeStatus = card.status === 'retrying' ? 'running retrying' : card.status;
   const badgeClass = `badge badge-${card.status === 'retrying' ? 'running' : card.status}`;
-  
+
+  // #16: after 60s in retrying state, flip to amber "long retry" indicator
+  const [isLongRetry, setIsLongRetry] = useState(false);
+  useEffect(() => {
+    if (card.status !== 'retrying') {
+      setIsLongRetry(false);
+      return;
+    }
+    const timer = setTimeout(() => setIsLongRetry(true), 60_000);
+    return () => clearTimeout(timer);
+  }, [card.status, card.retryCount]); // reset timer on each new retry attempt
+
   const iconData = AGENT_ICONS[card.role] || { icon: 'icon-pm', short: 'AI' };
 
   if (isGateCard) {
     const isFlagged = card.status === 'flagged';
+    const isRunning = card.status === 'running' || card.status === 'retrying';
+    const isDone = card.status === 'done';
+
+    let gateVariant: string;
+    if (isFlagged) gateVariant = 'active';
+    else if (isRunning) gateVariant = 'running';
+    else if (isDone) gateVariant = 'approved';
+    else gateVariant = 'pending';
+
+    let gateLabel: string;
+    if (isFlagged) gateLabel = 'Review required';
+    else if (isRunning) gateLabel = card.status === 'retrying' ? 'Reviewing… (retry)' : 'Reviewing…';
+    else if (isDone) gateLabel = 'Gate approved';
+    else gateLabel = 'Gate pending';
+
     return (
-      <div 
-        className={`gate-card gate-${isFlagged ? 'active' : card.status === 'pending' ? 'pending' : 'approved'}`}
+      <div
+        className={`gate-card gate-${gateVariant}`}
         onClick={isFlagged ? onOpenGate : undefined}
         style={isFlagged ? { cursor: 'pointer' } : {}}
         title={isFlagged ? 'Click to open review gate' : undefined}
       >
-        {isFlagged ? 'Review required' : card.status === 'done' ? 'Gate approved' : 'Gate pending'}
+        {gateLabel}
       </div>
     );
   }
 
   return (
-    <div className={`card is-${cssSafeStatus}`}>
+    <div className={`card is-${cssSafeStatus}`} style={isLongRetry ? { borderColor: '#d29922' } : undefined}>
       <div className="card-row">
         <div style={{ display: 'flex', alignItems: 'center' }}>
           <span className={`agent-icon ${iconData.icon}`}>{iconData.short}</span>
@@ -71,6 +98,12 @@ export function AgentCard({ card, onRetry, onSkip, onOpenGate }: AgentCardProps)
         <div className="card-desc">⟳ {card.currentSection}</div>
       )}
 
+      {(card.status === 'running' || card.status === 'retrying') && isLongRetry && (
+        <div className="card-desc" style={{ color: '#d29922' }}>
+          Retrying — attempt {card.retryCount} of 3
+        </div>
+      )}
+
       {card.status === 'done' && (
         <>
           <div className="card-desc">
@@ -78,6 +111,11 @@ export function AgentCard({ card, onRetry, onSkip, onOpenGate }: AgentCardProps)
           </div>
           <div className="card-indicators">
              {card.contextCompressed && <span className="indicator indicator-compressed">compressed</span>}
+             {card.contextCompressed && card.fullArtifactsFetched > 0 && (
+               <span className="indicator indicator-compressed" style={{ marginLeft: 4 }}>
+                 fetched {card.fullArtifactsFetched} full artifact{card.fullArtifactsFetched === 1 ? '' : 's'}
+               </span>
+             )}
           </div>
           {card.artifactKey && (
             <a className="artifact-link" href={`/project/artifact?path=${encodeURIComponent(card.artifactKey)}`} target="_blank" rel="noreferrer">

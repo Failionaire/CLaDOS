@@ -17,7 +17,7 @@ This is the buildable spec for CLaDOS v1. Everything in this document ships. Any
 - Conductor reasoning escape hatch (`conductor.reason()`) for stuck revision loops
 - Mechanical validation (contract checks, test execution) separate from LLM review
 - AST/LSP context extraction with Tree-sitter fallback
-- UI: Kanban board + gate drawer with approve/revise/destructive actions
+- UI: Kanban board + floating gate modal with approve/revise/destructive actions
 - One stack: TypeScript end-to-end (orchestrator, generated projects, UI)
 
 **OUT of scope — ships only after v1 is proven:**
@@ -38,11 +38,11 @@ This is the buildable spec for CLaDOS v1. Everything in this document ships. Any
 
 ## Startup and invocation
 
-CLaDOS is invoked as a Node.js CLI via `npx`:
+CLaDOS is invoked as a Node.js CLI via `node`:
 
 ```
-npx clados new my-project     # creates {cwd}/my-project/.clados/, starts pipeline
-npx clados resume my-project  # resumes a stopped/crashed project
+node clados new my-project     # creates {cwd}/my-project/.clados/, starts pipeline
+node clados resume my-project  # resumes a stopped/crashed project
 ```
 
 `clados new {name}` does the following:
@@ -56,7 +56,7 @@ npx clados resume my-project  # resumes a stopped/crashed project
 
 **The UI is served by the orchestrator's Express server** — a single process hosts both the REST/WebSocket API and the static SPA build (from `ui/dist/`). There is no separate Vite dev server in production usage. During development of CLaDOS itself, contributors run the Vite dev server (port 5173) with a proxy to the orchestrator — this is a contributor concern, not user-facing. There is no `clados dev` command.
 
-**No global install required.** `npx` resolves the package on first use. A global install (`npm install -g clados`) works identically. The entry point is `bin/clados.js` declared in `package.json`.
+The entry point is `bin/clados.js` declared in `package.json`. A global install (`npm install -g clados`) allows invoking `clados` directly without specifying the path.
 
 **Server lifecycle:** The Express server stays alive until the user closes the terminal or presses Ctrl+C. On `SIGINT`, the orchestrator writes `pipeline_status` to session state (preserving `gate_pending` or `agent_running` for resume) and exits cleanly. If an agent is mid-stream, the partial artifact in `.clados/wip/` is left intact for crash recovery.
 
@@ -477,7 +477,7 @@ React/Vite SPA connecting to the orchestrator over WebSocket. No polling.
 ### Layout
 - **Topbar:** CLaDOS logo, project name, phase chip, status indicator ("Waiting for your decision at Gate 2"), running cost total ("$0.38 used"), Focus button
 - **Board:** Horizontal scroll of phase columns, one per phase
-- **Gate drawer:** Resizable bottom drawer (drag handle, min 200px, height persisted to `localStorage`)
+- **Gate modal:** Floating modal window (position fixed, overlays the board with a dim background; minimize to a topbar pill, close on resolve)
 
 ### Phase columns
 Each column has a header showing phase name and status (Done / Active / Pending). Completed columns auto-collapse on viewports < 1400px. Collapse state persisted to `localStorage`.
@@ -493,9 +493,10 @@ Card states: Pending, Running, Done, Flagged, Error.
 
 **Flagged state:** Red left border, finding count.
 
-### Gate drawer
-Two panes side by side:
+### Gate modal
+Floating modal window anchored to fixed position below the topbar, dimming the board behind it. Three panes in a grid (`1fr 1.1fr 1fr`):
 - **Left:** Artifact content (rendered markdown/yaml/json)
+- **Middle:** Your feedback — answers to open questions and a revision textarea
 - **Right:** Validator findings sorted by severity
 
 Gate header shows:
@@ -664,9 +665,9 @@ This v1 is a substantial project, but it's buildable. Here's how the work breaks
 
 **UI:**
 - Kanban board with 5 columns, card state transitions
-- Gate drawer with 2-pane / 3-pane modes
+- Floating gate modal with 2-pane / 3-pane modes
 - WebSocket client with reconnection
-- Drawer resize, column collapse, localStorage persistence
+- Column collapse, localStorage persistence
 
 **Infrastructure:**
 - Express server with WebSocket upgrade
@@ -677,7 +678,7 @@ This v1 is a substantial project, but it's buildable. Here's how the work breaks
 - No custom agent framework
 - No IDE bridge or file sync
 - Findings-based validation (no score math or threshold tuning)
-- UI scoped to board + drawer (no budget band, no decisions panel)
+- UI scoped to board + gate modal (no budget band, no decisions panel)
 - One stack (TypeScript) — no polyglot tooling
 
 **What will be hardest:**

@@ -46,6 +46,14 @@ const RETRY_DELAYS_MS = [2_000, 8_000, 30_000];
 const MAX_RETRIES = 3;
 const UNRESOLVED_STREAK_REASON_THRESHOLD = 3;
 
+// ─── Context-length overflow error ───────────────────────────────────────────
+
+class ContextOverflowError extends Error {
+  constructor(public readonly agentRole: string, public readonly agentPhase: number) {
+    super(`Context overflow for ${agentRole} phase ${agentPhase}`);
+  }
+}
+
 // ─── JSON sanitizer ───────────────────────────────────────────────────────────
 
 function sanitizeJson(raw: string): unknown {
@@ -539,6 +547,9 @@ export class Conductor {
       }
     }
 
+    // #10: Detect dependency divergences after engineers complete
+    await this.detectDependencyDivergences(projectDir);
+
     // Verify test-context.json exists before dispatching QA
     const testContextPath = path.join(claDosDir, '02-build', 'test-context.json');
     if (!fs.existsSync(testContextPath)) {
@@ -649,6 +660,59 @@ export class Conductor {
     await this.openGate(projectDir, 2, 3, gateArtifacts);
   }
 
+  // ─── Dependency divergence detection (#10) ─────────────────────────────────
+
+  private async detectDependencyDivergences(projectDir: string): Promise<void> {
+    const claDosDir = path.join(projectDir, '.clados');
+    try {
+      // Parse declared packages from 01-architecture.md (code blocks + bullet lists)
+      const archContent = await fs.promises.readFile(
+        path.join(claDosDir, '01-architecture.md'), 'utf-8',
+      );
+      const declaredPackages = new Set<string>();
+      // Fenced code blocks
+      for (const codeBlock of archContent.matchAll(/```[^\n]*\n([\s\S]*?)```/g)) {
+        for (const line of codeBlock[1]!.split('\n')) {
+          const pkg = line.trim().split(/\s/)[0] ?? '';
+          if (pkg && /^[a-z@][a-z0-9._\-/]*$/i.test(pkg) && !pkg.includes(':')) {
+            declaredPackages.add(pkg);
+          }
+        }
+      }
+      // Bullet list entries: `- package` or `* package`
+      for (const m of archContent.matchAll(/^[ \t]*[-*]\s+([a-z@][a-z0-9._\-/]*)(?:\s|$)/gim)) {
+        declaredPackages.add(m[1]!);
+      }
+
+      // Read engineer manifest(s) and extract declared dependencies
+      const manifestFiles = [
+        '02-build/backend-engineer-manifest.json',
+        '02-build/frontend-engineer-manifest.json',
+      ];
+      const manifestDeps = new Set<string>();
+      for (const mf of manifestFiles) {
+        try {
+          const raw = await fs.promises.readFile(path.join(claDosDir, mf), 'utf-8');
+          const manifest = JSON.parse(raw) as { dependencies?: Record<string, string> };
+          for (const dep of Object.keys(manifest.dependencies ?? {})) {
+            manifestDeps.add(dep);
+          }
+        } catch { /* manifest may not exist */ }
+      }
+
+      const divergences = [...manifestDeps].filter((d) => !declaredPackages.has(d));
+      if (divergences.length > 0) {
+        await this.session.update(projectDir, { dependency_divergences: divergences });
+        this.logger.info(
+          'dependency_divergence',
+          `New packages introduced by engineer: ${divergences.join(', ')}`,
+        );
+      }
+    } catch (err) {
+      this.logger.warn('dependency_divergence', `Failed to detect divergences: ${String(err)}`);
+    }
+  }
+
   // ─── Phase 3 — Document ──────────────────────────────────────────────────────
 
   private async runPhase3(projectDir: string): Promise<void> {
@@ -688,13 +752,13 @@ export class Conductor {
           { artifact: '01-api-spec.yaml', type: 'reference' },
           { artifact: '02-build/test-runner.json', type: 'reference' },
         ],
-        contextPrefix: 'Write README, changelog, and runbook based on the actual functioning codebase. Read src/ and tests/ via read_file as needed. Write to docs/.',
+        contextPrefix: 'Write README, changelog, and runbook based on the actual functioning codebase. Read src/ and tests/ via read_file as needed. Write to docs/. Also produce 03-api-spec-draft.yaml as specified in your instructions.',
         variables: { project_type: state.config.project_type },
       });
     }
 
     // PM: final PRD and canonical API spec.
-    // Bug 2 fix: 03-api-spec-draft.yaml never exists; PM derives the final spec by reading src/.
+    // PM reads 03-api-spec-draft.yaml (produced by Docs) as base, preserves 01-api-spec.yaml unchanged.
     if (!priorCompleted.has('pm')) {
       await this.dispatchAgent({
         role: 'pm',
@@ -702,10 +766,11 @@ export class Conductor {
         projectDir,
         contextArtifacts: [
           { artifact: '01-prd.md', type: 'required' },
-          { artifact: '01-api-spec.yaml', type: 'required' },
+          { artifact: '01-api-spec.yaml', type: 'reference' },
+          { artifact: '03-api-spec-draft.yaml', type: 'required' },
           { artifact: '02-build/test-runner.json', type: 'reference' },
         ],
-        contextPrefix: 'Write the final PRD (03-prd.md). Then produce 03-api-spec.yaml as the canonical record of the API as actually built — use read_file to inspect src/ routes and verify each endpoint against the original 01-api-spec.yaml. Preserve 01-api-spec.yaml unchanged.',
+        contextPrefix: 'Write the final PRD (03-prd.md). Then produce 03-api-spec.yaml as the canonical record of the API as actually built — use 03-api-spec-draft.yaml (produced by the Docs agent) as your base, and verify against src/ routes via read_file if needed. 01-api-spec.yaml is the original design artifact — preserve it unchanged.',
       });
     }
 
@@ -1040,12 +1105,53 @@ export class Conductor {
     }
   }
 
+  // ─── Context overflow gate ───────────────────────────────────────────────────
+
+  /**
+   * Open a special gate when an agent's inputs are too large to process even after compression.
+   * Only shows a Stop button — no Approve/Revise actions are meaningful here.
+   */
+  private async openContextOverflowGate(
+    projectDir: string,
+    phase: number,
+    agentRole: string,
+  ): Promise<void> {
+    await this.session.update(projectDir, { pipeline_status: 'gate_pending' });
+
+    const overflowEvent: WsServerEvent = {
+      type: 'gate:open',
+      phase,
+      gate_number: phase + 1,
+      artifacts: [],
+      findings: [],
+      revision_count: 0,
+      next_phase_cost_estimate: '',
+      overflow: true,
+      overflow_message: `The ${agentRole} agent\u2019s inputs are too large to process even with compression. You can simplify the inputs or stop here.`,
+    };
+    this.currentGateEvent = overflowEvent;
+    this.broadcast(overflowEvent);
+
+    this.logger.warn(
+      'conductor.context_overflow_gate',
+      `Context overflow gate opened for ${agentRole} at phase ${phase}`,
+    );
+
+    // Wait for human — only abort/approve are meaningful here
+    for (;;) {
+      const response = await this.waitForGate(projectDir);
+      if (response.action === 'abort' || response.action === 'approve') {
+        this.currentGateEvent = null;
+        return;
+      }
+      this.broadcast(overflowEvent);
+    }
+  }
+
   private async handleGateGoto(
     projectDir: string,
     _fromPhase: number,
     targetGate: number,
-  ): Promise<void> {
-    const targetPhase = targetGate - 1;
     const claDosDir = path.join(projectDir, '.clados');
     const historyDir = path.join(claDosDir, 'history', `rollback-${Date.now()}`);
     await fs.promises.mkdir(historyDir, { recursive: true });
@@ -1328,11 +1434,10 @@ export class Conductor {
           await this.session.archiveArtifact(projectDir, '03-prd.md');  // H-7
           await this.dispatchAgent({
             role: 'pm', phase: 3, projectDir,
-            // Bug 2 fix: provide the original design spec as required context;
-            // PM derives the canonical spec by reading src/ via read_file.
             contextArtifacts: [
               { artifact: '01-prd.md', type: 'reference' },
-              { artifact: '01-api-spec.yaml', type: 'required' },
+              { artifact: '01-api-spec.yaml', type: 'reference' },
+              { artifact: '03-api-spec-draft.yaml', type: 'required' },
               { artifact: '03-validator.json', type: 'required' },
             ],
             contextPrefix: revisedContextPrefix,
@@ -1431,6 +1536,13 @@ export class Conductor {
         try {
           return await this.dispatchWithRetry(config, entry, state, checkpoint);
         } catch (err) {
+          // ── Context overflow gate ────────────────────────────────────────────
+          if (err instanceof ContextOverflowError) {
+            await this.openContextOverflowGate(projectDir, err.agentPhase, err.agentRole);
+            await this.session.update(projectDir, { pipeline_status: 'abandoned' });
+            throw new Error('PIPELINE_ABANDONED');
+          }
+
           // ── Budget gate ───────────────────────────────────────────────────
           if (err instanceof BudgetGate) {
             this.currentBudgetGateEvent = {
@@ -1495,6 +1607,7 @@ export class Conductor {
   ): Promise<AgentResult> {
     const { role, phase, projectDir, variables, contextArtifacts, contextPrefix, modelOverride, errorKey, deniedPrefixes } = config;
     const claDosDir = path.join(projectDir, '.clados');
+    const dispatchStartedAt = Date.now();
 
     // Resolve model
     const model = modelOverride ?? resolveModel(
@@ -1525,6 +1638,21 @@ export class Conductor {
       this.budgetManager.checkSummarizerBudget(projectedCost, cumulativeSummarizerCost, state);
     const onSummarizerCost = (cost: number): void => { cumulativeSummarizerCost += cost; };
 
+    // #12: Capture context downgrade log entries to persist to session state
+    const compressionLog: import('./types.js').ContextCompressionLogEntry[] = [];
+    const onDowngradeLog = (artifact: string, reason: 'reference_to_summary' | 'required_to_summary'): void => {
+      compressionLog.push({ agent: role, phase, artifact, reason, timestamp: new Date().toISOString() });
+    };
+
+    // #13: Track first use of token-count fallback per session
+    let approximateFlagWritten = state.token_counting_approximate;
+    const onApproximate = async (): Promise<void> => {
+      if (!approximateFlagWritten) {
+        approximateFlagWritten = true;
+        await this.session.update(projectDir, { token_counting_approximate: true });
+      }
+    };
+
     const { resolved, compressionNeeded, fullFetchPaths } = await resolveContextArtifacts(
       claDosDir,
       artifacts,
@@ -1532,14 +1660,21 @@ export class Conductor {
       this.logger,
       summarizerBudgetCheck,
       onSummarizerCost,
+      onDowngradeLog,
     );
 
-    // Record summarizer cost to session state so per-phase cost breakdown is accurate
+    // Record summarizer cost and compression log to session state
     if (cumulativeSummarizerCost > 0) {
       await this.session.recordTokens(projectDir, phase, 'summarizer', {
         input: 0,
         output: 0,
         cost_usd: cumulativeSummarizerCost,
+      });
+    }
+    if (compressionLog.length > 0) {
+      const freshState = await this.session.read(projectDir);
+      await this.session.update(projectDir, {
+        context_compression_log: [...(freshState.context_compression_log ?? []), ...compressionLog],
       });
     }
 
@@ -1625,9 +1760,9 @@ export class Conductor {
         }
 
         if (isContextLength) {
-          // Already compressed and still too large — don't waste remaining retry slots.
-          this.logger.warn('agent.context_overflow', `${role} context too large even after compression — exhausted`);
-          break;
+          // Already compressed and still too large — force overflow gate
+          this.logger.warn('agent.context_overflow', `${role} context too large even after compression — forcing overflow gate`);
+          throw new ContextOverflowError(role, phase);
         }
 
         const errorType = this.classifyError(errMsg);
@@ -1655,6 +1790,8 @@ export class Conductor {
       retry_count: MAX_RETRIES,
       agent: role,
       phase,
+      elapsed_ms: Date.now() - dispatchStartedAt,
+      artifact_path: this.inferArtifactPath(role, phase),
     };
     await writeFileAtomic(
       path.join(claDosDir, 'wip', `${role}-error.json`),
@@ -1690,6 +1827,7 @@ export class Conductor {
     let totalInput = 0;
     let totalOutput = 0;
     const writtenPaths: string[] = [];  // M-14: collect all write_file paths
+    let fullArtifactFetchCount = 0;  // #17: count full artifact reads in a compressed context run
 
     // Clean WIP file at start of each attempt
     await writeFileAtomic(wipPath, '', { encoding: 'utf8' });
@@ -1748,7 +1886,8 @@ export class Conductor {
         if (finalMessage.stop_reason === 'tool_use') {
           // Process tool calls
           const toolResults = await this.processToolCalls(
-            finalMessage.content, projectDir, deniedPrefixes,
+            finalMessage.content, projectDir, deniedPrefixes, fullFetchPaths,
+            (count) => { fullArtifactFetchCount += count; },
           );
           messages.push({ role: 'assistant', content: finalMessage.content });
           messages.push({ role: 'user', content: toolResults });
@@ -1837,6 +1976,7 @@ export class Conductor {
       tokens_used: { input: totalInput, output: totalOutput },
       cost_usd: costUsd,
       context_compressed: compressionNeeded,
+      full_artifacts_fetched: fullArtifactFetchCount,
     });
 
     return {
@@ -1892,6 +2032,8 @@ export class Conductor {
     content: Anthropic.ContentBlock[],
     projectDir: string,
     deniedPrefixes?: string[],
+    fullFetchPaths?: string[],
+    onFullFetch?: (count: number) => void,
   ): Promise<Anthropic.ToolResultBlockParam[]> {
     const results: Anthropic.ToolResultBlockParam[] = [];
 
@@ -1913,6 +2055,13 @@ export class Conductor {
               toolResult = `Access denied: ${input['path']} is not available to this agent.`;
               break;
             }
+            // #17: track when agent reads a compressed artifact in full
+            if (fullFetchPaths?.some((p) => {
+              const resolvedArtifact = path.resolve(projectDir, '.clados', p);
+              return filePath === resolvedArtifact;
+            })) {
+              onFullFetch?.(1);
+            }
             toolResult = await fs.promises.readFile(filePath, 'utf-8');
             break;
           }
@@ -1921,8 +2070,19 @@ export class Conductor {
               toolResult = 'Error: write_file requires path and content arguments'; break;
             }
             const filePath = this.resolveSafePath(projectDir, input['path']);
+            let writeContent = input['content'];
+            // #3: sanitize JSON before writing to prevent invalid files from blocking the pipeline
+            if (input['path'].endsWith('.json')) {
+              try {
+                const parsed = sanitizeJson(writeContent);
+                writeContent = JSON.stringify(parsed, null, 2);
+              } catch (jsonErr) {
+                toolResult = `Error: write_file content is not valid JSON — ${(jsonErr as Error).message}. Please output only valid JSON without markdown fences.`;
+                break;
+              }
+            }
             await fs.promises.mkdir(path.dirname(filePath), { recursive: true });
-            await writeFileAtomic(filePath, input['content'], { encoding: 'utf8' });
+            await writeFileAtomic(filePath, writeContent, { encoding: 'utf8' });
             // Bump spec version only when the Phase 1 API spec is updated (divergence detection)
             if (input['path'] === '01-api-spec.yaml' || input['path'] === '.clados/01-api-spec.yaml') {
               await this.session.bumpSpecVersion(projectDir);

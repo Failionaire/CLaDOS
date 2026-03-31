@@ -10,6 +10,8 @@ interface KanbanBoardProps {
   onSkip: (phase: number, agent: string, errorKey?: string) => void;
   focusMode: boolean;
   onOpenGate?: () => void;
+  /** Set by App when gate is approved/revised — lets us clear the flagged card before WS events arrive */
+  resolvedGate?: { phase: number; approved: boolean } | null;
 }
 
 const PHASE_AGENTS: Record<number, string[]> = {
@@ -45,6 +47,7 @@ const blankCard = (role: string, phase: number): AgentCardState => ({
   artifactKey: null,
   errorMessage: null,
   contextCompressed: false,
+  fullArtifactsFetched: 0,
   isSkippable: false,
   errorKey: undefined,
   retryCount: 0,
@@ -88,13 +91,42 @@ function buildCardsFromSnapshot(state: SessionState): Record<string, AgentCardSt
   return result;
 }
 
-export function KanbanBoard({ sessionState, events, onRetry, onSkip, focusMode, onOpenGate }: KanbanBoardProps) {
+export function KanbanBoard({ sessionState, events, onRetry, onSkip, focusMode, onOpenGate, resolvedGate }: KanbanBoardProps) {
   const [collapsed, setCollapsed] = useState<Record<number, boolean>>(() => {
     try {
       const saved = localStorage.getItem('clados:collapsed');
       return saved ? JSON.parse(saved) : {};
     } catch { return {}; }
   });
+
+  // Auto-collapse phases when they are newly marked as completed.
+  // Only auto-collapses on viewports narrower than 1400px — on wider screens users can
+  // see all columns simultaneously so collapsing is not needed for focus.
+  // User can still expand manually (their explicit false stays respected).
+  const prevCompletedRef = useRef(new Set<number>());
+  useEffect(() => {
+    const nowCompleted = new Set(sessionState?.phases_completed ?? []);
+    const newlyDone: number[] = [];
+    for (const p of nowCompleted) {
+      if (!prevCompletedRef.current.has(p)) newlyDone.push(p);
+    }
+    prevCompletedRef.current = nowCompleted;
+    if (newlyDone.length > 0 && window.innerWidth < 1400) {
+      setCollapsed((prev) => {
+        const next = { ...prev };
+        let changed = false;
+        for (const p of newlyDone) {
+          if (prev[p] !== false) { // don't override explicit user expand
+            next[p] = true;
+            changed = true;
+          }
+        }
+        if (!changed) return prev;
+        try { localStorage.setItem('clados:collapsed', JSON.stringify(next)); } catch {}
+        return next;
+      });
+    }
+  }, [sessionState?.phases_completed]);
 
   const [cards, setCards] = useState<Record<string, AgentCardState>>(() => {
     const initial: Record<string, AgentCardState> = {};
@@ -109,6 +141,21 @@ export function KanbanBoard({ sessionState, events, onRetry, onSkip, focusMode, 
   });
 
   const processedEvents = useRef(new Set<number>());
+
+  // Optimistically clear the "Review required" gate card when the user approves or revises
+  // at the gate — before the first agent:start WS event arrives from the server.
+  useEffect(() => {
+    if (!resolvedGate) return;
+    setCards((prev) => {
+      const next = { ...prev };
+      for (const [key, card] of Object.entries(next)) {
+        if (card.status === 'flagged' && card.role === 'validator' && card.phase === resolvedGate.phase) {
+          next[key] = { ...card, status: resolvedGate.approved ? 'done' : 'pending' };
+        }
+      }
+      return next;
+    });
+  }, [resolvedGate]);
 
   useEffect(() => {
     const latestEvent = events[events.length - 1];
@@ -137,6 +184,20 @@ export function KanbanBoard({ sessionState, events, onRetry, onSkip, focusMode, 
             model: latestEvent.model,
             currentSection: null,
           };
+          // Clear any 'flagged' validator cards that this agent start implies are resolved:
+          // - Same phase, non-validator starting → revision cycle began, gate is no longer open
+          // - Earlier phase, any agent starting → that phase was approved, validator is done
+          if (latestEvent.agent !== 'validator') {
+            for (const [cardKey, cardState] of Object.entries(next)) {
+              if (cardState.status === 'flagged' && cardState.role === 'validator') {
+                if (cardState.phase < latestEvent.phase) {
+                  next[cardKey] = { ...cardState, status: 'done' };
+                } else if (cardState.phase === latestEvent.phase) {
+                  next[cardKey] = { ...cardState, status: 'pending' };
+                }
+              }
+            }
+          }
           break;
         }
         case 'agent:stream': {
@@ -157,6 +218,7 @@ export function KanbanBoard({ sessionState, events, onRetry, onSkip, focusMode, 
               costUsd: latestEvent.cost_usd,
               artifactKey: latestEvent.artifact,
               contextCompressed: latestEvent.context_compressed,
+              fullArtifactsFetched: latestEvent.full_artifacts_fetched ?? 0,
               retryCount: 0,
             };
           }

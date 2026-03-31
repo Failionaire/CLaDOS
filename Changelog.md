@@ -6,6 +6,34 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ---
 
+## [1.0.0-alpha.4] — 2026-03-31
+
+v1 spec compliance pass — UI-driven project setup, Gate drawer, and polish items from the compliance fix plan.
+
+### Added
+
+#### Orchestrator
+- **`POST /project/new`** — new REST endpoint that accepts `{ idea, project_type, security_enabled, wrecker_enabled, spend_cap }` from the `SetupScreen` UI form; validates required fields, writes session config, and signals the pipeline to start via a deferred resolver callback in `ServerContext`
+- **`ServerContext.setupResolver`** — optional callback added to `ServerContext` interface; `startServer()` wires it to a deferred `Promise<void>` so `handleNew()` can await the UI form submission before kicking off `runPipelineLoop()`
+
+#### UI
+- **`Gate.tsx` overflow mode** — when a `gate:open` event carries `overflow: true`, the Gate renders a simplified single-message view with only a Stop button (no Approve / Revise actions); prevents user confusion on context-length overflow gates
+- **Amber retrying timer** (`AgentCard.tsx`) — when a card has been in `retrying` status for 60 seconds, the card border shifts to amber (`#d29922`) and a "Retrying — attempt N of 3" label appears below the status icon; timer resets if the card leaves `retrying` state
+- **"Fetched N full artifact(s)" badge** (`AgentCard.tsx`, `KanbanBoard.tsx`) — done cards that ran with compressed context now display a count of how many full artifacts the agent fetched via `read_file` during its turn; driven by `full_artifacts_fetched` from the `agent:done` event
+
+### Changed
+
+#### Orchestrator
+- **`cli.ts`** — `promptSetup()` readline flow removed; `clados new <name>` now starts the server and opens the browser immediately; the Phase 0 `SetupScreen` UI is now the sole input mechanism for project configuration; `is_high_complexity` is no longer collected at setup time (it is inferred later from idea complexity)
+
+#### UI
+- **`Gate.tsx`** — rebuilt from a full-screen dimming overlay to a **floating modal window**: `position: fixed`, anchored below the topbar (`top: 80px, left/right: 28px`), with a separate dim overlay behind it; clicking the overlay or the `─` button minimizes to the Topbar pill; `✕` closes on resolve
+- **`App.tsx`** — removed `gateDrawerHeight` state and `paddingBottom` adjustment (no longer needed; the floating modal overlays rather than displacing content)
+- **`KanbanBoard.tsx`** — auto-collapse of completed columns is now conditional on `window.innerWidth < 1400`; wide-screen users retain an uncollapsed view until they manually collapse
+- **`ui/src/types.ts`** — `WsGateOpen` gains `overflow?: boolean` and `overflow_message?: string`; `WsAgentDone` gains `full_artifacts_fetched: number`; `AgentCardState` gains `fullArtifactsFetched: number`
+
+---
+
 ## [1.0.0-alpha.3] — 2026-03-30
 
 UI additions, bug fixes, and a full gate review overhaul. No spec changes.

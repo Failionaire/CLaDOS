@@ -182,7 +182,7 @@ With V4, CLaDOS closes the loop described in the goal document:
 | `conductor.reason()` | V1 |
 | Mechanical validation | V1 |
 | AST/LSP + Tree-sitter | V1 |
-| Kanban UI + gate drawer | V1 |
+| Kanban UI + floating gate modal | V1 |
 | Agent questions / autonomy mode | V2 |
 | Decisions panel | V2 |
 | Budget band UI | V2 |
