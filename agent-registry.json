@@ -1,10 +1,16 @@
 {
+  "_model_reference": {
+    "_note": "Full API model names — update these when restoring production config",
+    "haiku":  "claude-haiku-4-5-20251001",
+    "sonnet": "claude-sonnet-4-6",
+    "opus":   "claude-opus-4-6"
+  },
   "agents": [
     {
       "role": "pm",
       "system_prompt": "agents/pm.md",
-      "default_model": "claude-sonnet-4-6",
-      "escalation_model": "claude-opus-4-6",
+      "default_model": "claude-haiku-4-5-20251001",
+      "escalation_model": "claude-sonnet-4-6",
       "tools": ["read_file", "write_file"],
       "enabled_when": "always",
       "context_artifacts": [
@@ -21,8 +27,8 @@
     {
       "role": "architect",
       "system_prompt": "agents/architect.md",
-      "default_model": "claude-sonnet-4-6",
-      "escalation_model": "claude-opus-4-6",
+      "default_model": "claude-haiku-4-5-20251001",
+      "escalation_model": "claude-sonnet-4-6",
       "tools": ["read_file", "write_file"],
       "enabled_when": "always",
       "context_artifacts": [
@@ -36,8 +42,8 @@
     {
       "role": "engineer",
       "system_prompt": "agents/engineer.md",
-      "default_model": "claude-sonnet-4-6",
-      "escalation_model": "claude-opus-4-6",
+      "default_model": "claude-haiku-4-5-20251001",
+      "escalation_model": "claude-sonnet-4-6",
       "tools": ["read_file", "write_file", "list_files"],
       "enabled_when": "always",
       "context_artifacts": [
@@ -53,8 +59,8 @@
     {
       "role": "qa",
       "system_prompt": "agents/qa.md",
-      "default_model": "claude-sonnet-4-6",
-      "escalation_model": "claude-opus-4-6",
+      "default_model": "claude-haiku-4-5-20251001",
+      "escalation_model": "claude-sonnet-4-6",
       "tools": ["read_file", "write_file"],
       "enabled_when": "always",
       "context_artifacts": [
@@ -69,8 +75,8 @@
     {
       "role": "validator",
       "system_prompt": "agents/validator.md",
-      "default_model": "claude-sonnet-4-6",
-      "escalation_model": "claude-opus-4-6",
+      "default_model": "claude-haiku-4-5-20251001",
+      "escalation_model": "claude-sonnet-4-6",
       "tools": ["read_file"],
       "enabled_when": "always",
       "context_artifacts": [],
@@ -81,8 +87,8 @@
     {
       "role": "security",
       "system_prompt": "agents/security.md",
-      "default_model": "claude-sonnet-4-6",
-      "escalation_model": "claude-opus-4-6",
+      "default_model": "claude-haiku-4-5-20251001",
+      "escalation_model": "claude-sonnet-4-6",
       "tools": ["read_file", "write_file"],
       "enabled_when": "config.security",
       "context_artifacts": [
@@ -96,8 +102,8 @@
     {
       "role": "wrecker",
       "system_prompt": "agents/wrecker.md",
-      "default_model": "claude-sonnet-4-6",
-      "escalation_model": "claude-opus-4-6",
+      "default_model": "claude-haiku-4-5-20251001",
+      "escalation_model": "claude-sonnet-4-6",
       "tools": ["read_file", "write_file"],
       "enabled_when": "config.wrecker",
       "context_artifacts": [
@@ -113,8 +119,8 @@
     {
       "role": "devops",
       "system_prompt": "agents/devops.md",
-      "default_model": "claude-sonnet-4-6",
-      "escalation_model": "claude-opus-4-6",
+      "default_model": "claude-haiku-4-5-20251001",
+      "escalation_model": "claude-sonnet-4-6",
       "tools": ["read_file", "write_file"],
       "enabled_when": "always",
       "context_artifacts": [
@@ -129,8 +135,8 @@
     {
       "role": "docs",
       "system_prompt": "agents/docs.md",
-      "default_model": "claude-sonnet-4-6",
-      "escalation_model": "claude-opus-4-6",
+      "default_model": "claude-haiku-4-5-20251001",
+      "escalation_model": "claude-sonnet-4-6",
       "tools": ["read_file", "write_file", "list_files"],
       "enabled_when": "always",
       "context_artifacts": [
@@ -145,13 +151,13 @@
   ],
   "rate_limit_tpm": 80000,
   "utility_models": {
-    "token_counter": "claude-sonnet-4-6",
+    "token_counter": "claude-haiku-4-5-20251001",
     "summarizer":    "claude-haiku-4-5",
-    "conductor":     "claude-opus-4-6"
+    "conductor":     "claude-sonnet-4-6"
   },
   "model_prices": {
-    "claude-sonnet-4-6": { "input": 3.00, "output": 15.00 },
-    "claude-opus-4-6":   { "input": 5.00, "output": 25.00 },
+    "claude-haiku-4-5-20251001": { "input": 3.00, "output": 15.00 },
+    "claude-sonnet-4-6":   { "input": 5.00, "output": 25.00 },
     "claude-haiku-4-5":  { "input": 1.00, "output":  5.00 }
   }
 }

@@ -1152,6 +1152,8 @@ export class Conductor {
     projectDir: string,
     _fromPhase: number,
     targetGate: number,
+  ): Promise<void> {
+    const targetPhase = targetGate - 1;
     const claDosDir = path.join(projectDir, '.clados');
     const historyDir = path.join(claDosDir, 'history', `rollback-${Date.now()}`);
     await fs.promises.mkdir(historyDir, { recursive: true });
@@ -1739,7 +1741,7 @@ export class Conductor {
       try {
         const result = await this.streamingDispatch(
           role, phase, projectDir, claDosDir, wipPath, model,
-          systemPrompt, userContent, entry, state, compressionNeeded, deniedPrefixes, errorKey,
+          systemPrompt, userContent, entry, state, compressionNeeded, deniedPrefixes, errorKey, fullFetchPaths,
         );
         return result;
       } catch (err) {
@@ -1816,6 +1818,7 @@ export class Conductor {
     compressionNeeded: boolean,
     deniedPrefixes?: string[],
     errorKey?: string,
+    fullFetchPaths?: string[],
   ): Promise<AgentResult> {
     const tools: Anthropic.Tool[] = this.buildToolDefinitions(entry.tools);
     const messages: Anthropic.MessageParam[] = [{ role: 'user', content: userContent }];
