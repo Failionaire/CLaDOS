@@ -15,7 +15,8 @@ export function ArtifactSidebar({ isOpen, onClose, sessionState }: ArtifactSideb
 
   // Group artifacts roughly by phase based on the file name prefix (e.g. 0-pm.md -> Phase 0)
   const artifacts = sessionState?.artifacts ?? {};
-  const artifactKeys = Object.keys(artifacts).sort();
+  // Filter out raw validator JSON — findings are already surfaced in the Gate panel
+  const artifactKeys = Object.keys(artifacts).filter((k) => !k.match(/validator\.json$/i)).sort();
 
   useEffect(() => {
     if (!selectedArtifact || !isOpen) return;
@@ -53,7 +54,7 @@ export function ArtifactSidebar({ isOpen, onClose, sessionState }: ArtifactSideb
   if (!isOpen) return null;
 
   return (
-    <div style={styles.container}>
+    <div className="sidebar-panel" style={styles.container}>
       <div style={styles.header}>
         <div style={styles.headerTitle}>Generated Files</div>
         <button style={styles.closeBtn} onClick={onClose} title="Close sidebar">
@@ -98,34 +99,34 @@ export function ArtifactSidebar({ isOpen, onClose, sessionState }: ArtifactSideb
 const styles = {
   container: {
     position: 'fixed' as const,
-    top: 48,
+    top: 62,
     right: 0,
     bottom: 0,
     width: '600px',
-    backgroundColor: '#0d1117',
-    borderLeft: '1px solid #30363d',
+    backgroundColor: 'var(--panel)',
+    borderLeft: '1px solid var(--border)',
     display: 'flex',
     flexDirection: 'column' as const,
     zIndex: 90,
-    boxShadow: '-4px 0 15px rgba(0,0,0,0.5)',
+    boxShadow: 'var(--shadow-md)',
   },
   header: {
     padding: '12px 16px',
-    borderBottom: '1px solid #30363d',
+    borderBottom: '1px solid var(--border)',
     display: 'flex',
     justifyContent: 'space-between',
     alignItems: 'center',
-    backgroundColor: '#161b22',
+    backgroundColor: 'var(--surface)',
   },
   headerTitle: {
     fontWeight: 600,
     fontSize: 14,
-    color: '#e6edf3',
+    color: 'var(--text)',
   },
   closeBtn: {
     background: 'none',
     border: 'none',
-    color: '#8b949e',
+    color: 'var(--text-3)',
     fontSize: 20,
     cursor: 'pointer',
     padding: '0 4px',
@@ -139,33 +140,33 @@ const styles = {
   },
   sidebar: {
     width: '200px',
-    borderRight: '1px solid #30363d',
+    borderRight: '1px solid var(--border)',
     overflowY: 'auto' as const,
     padding: '8px 0',
   },
   empty: {
     padding: 16,
-    color: '#8b949e',
+    color: 'var(--text-3)',
     fontSize: 13,
     textAlign: 'center' as const,
   },
   fileItem: {
     padding: '6px 16px',
     fontSize: 13,
-    color: '#c9d1d9',
+    color: 'var(--text-2)',
     cursor: 'pointer',
     whiteSpace: 'nowrap' as const,
     overflow: 'hidden',
     textOverflow: 'ellipsis',
   },
   fileItemSelected: {
-    backgroundColor: '#1f6feb33',
-    color: '#58a6ff',
-    borderRight: '2px solid #58a6ff',
+    backgroundColor: 'var(--ap-orange-lo)',
+    color: 'var(--ap-orange)',
+    borderRight: '2px solid var(--ap-orange)',
   },
   content: {
     flex: 1,
     overflowY: 'auto' as const,
-    backgroundColor: '#010409',
+    backgroundColor: 'var(--bg)',
   },
 };

@@ -481,7 +481,7 @@ The Architect's `01-architecture.md` includes a declared dependency list. After 
 React/Vite SPA connecting to the orchestrator over WebSocket. No polling.
 
 ### Layout
-- **Topbar:** CLaDOS logo, project name, phase chip, status indicator ("Waiting for your decision at Gate 2"), running cost total ("$0.38 used"), Focus button
+- **Topbar:** CLaDOS logo, project name, **GLaDOS progress bar** (cost-weighted dual-rail bar showing all 5 phases; segment width ∝ √cost; active segment glows orange; sublabels show snarky status or live cost), running cost total ("$0.38 used"), Focus button
 - **Board:** Horizontal scroll of phase columns, one per phase
 - **Gate modal:** Floating modal window (position fixed, overlays the board with a dim background; minimize to a topbar pill, close on resolve)
 
@@ -500,20 +500,23 @@ Card states: Pending, Running, Done, Flagged, Error.
 **Flagged state:** Red left border, finding count.
 
 ### Gate modal
-Floating modal window anchored to fixed position below the topbar, dimming the board behind it. Three panes in a grid (`1fr 1.1fr 1fr`):
-- **Left:** Artifact content (rendered markdown/yaml/json)
-- **Middle:** Your feedback — answers to open questions and a revision textarea
-- **Right:** Validator findings sorted by severity
+Floating modal window anchored to fixed position below the topbar, dimming the board behind it. Layout is **adaptive**: two or three panes depending on whether the Validator produced any findings.
+
+- **When findings exist** — three-pane grid (`1fr 1.1fr 1fr`):
+  - **Left:** Artifact content (rendered markdown/yaml/json), scroll-fade at the bottom
+  - **Middle:** Your notes — instructional hint + revision textarea (fills available height)
+  - **Right:** Validator findings sorted by severity; header shows must-fix count badge
+- **When there are no findings** — two-pane grid (`1fr 1fr`): artifact left, notes right. The empty findings column is not rendered.
 
 Gate header shows:
 - Gate name and phase
-- Revision counter: "Revision 1 of 3 before Opus escalation" (amber at 2, red at 3+)
+- Revision counter: "Revision 1 of 3 before Opus escalation" — dotted underline with `cursor: help`; tooltip explains that after 3 unresolved revisions the Validator upgrades to Claude Opus (amber at 2, red at 3+)
 - Next-phase cost estimate: "Next phase: ~$0.45" (single-pass, no revision speculation)
 
 Gate actions:
-- **Approve →** — proceed to next phase
-- **↺ Ask AI to revise** — opens 3-pane view: artifact (40%), revision textarea (30%), findings (30%). On viewports < 1100px, left pane toggles between Artifact and Revision tabs. Findings always visible.
-- **⚠ More options:** destructive actions menu:
+- **Approve →** — blocked if any `must_fix` findings are unresolved; shows a confirmation dialog if `should_fix` / suggestion findings remain unaddressed
+- **↺ Revise** — sends the revision note and re-runs the phase agents
+- **Actions ▾** — neutral grey dropdown for destructive/navigational actions:
   - Go back to Gate N (dropdown of prior gates, confirmation lists discarded artifacts). When rolling back past Phase 2, `src/`, `tests/`, `infra/`, and `docs/` are archived to `.clados/history/rollback-{timestamp}/` before the re-run. The confirmation dialog lists these directories alongside `.clados/` artifacts. After rollback, a clean scaffold is regenerated from Phase 1.
   - Restart this phase (clears `.clados/wip/` for current phase)
   - Abandon project (writes `abandoned` status, all artifacts preserved)

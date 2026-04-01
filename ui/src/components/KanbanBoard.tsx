@@ -203,7 +203,19 @@ export function KanbanBoard({ sessionState, events, onRetry, onSkip, focusMode, 
         case 'agent:stream': {
           const key = `${latestEvent.phase}:${latestEvent.agent}`;
           if (next[key]) {
-            next[key] = { ...next[key], currentSection: latestEvent.section };
+            const prevSection = next[key].currentSection;
+            const prevSections = next[key].sections ?? [];
+            // Push the previous current section to the completed list
+            const sections = prevSection && prevSection !== latestEvent.section
+              ? [...prevSections, prevSection]
+              : prevSections;
+            next[key] = {
+              ...next[key],
+              currentSection: latestEvent.section,
+              sections,
+              // §8.2: Update approximate output tokens from stream
+              ...(latestEvent.tokens_out != null ? { outputTokens: latestEvent.tokens_out } : {}),
+            };
           }
           break;
         }
@@ -231,6 +243,7 @@ export function KanbanBoard({ sessionState, events, onRetry, onSkip, focusMode, 
               ...next[key],
               status: 'error',
               errorMessage: latestEvent.message,
+              errorType: latestEvent.error_type,
               isSkippable: latestEvent.is_skippable,
               errorKey: latestEvent.error_key,
               retryCount: latestEvent.retry_count,
@@ -267,6 +280,29 @@ export function KanbanBoard({ sessionState, events, onRetry, onSkip, focusMode, 
   };
 
   const currentPhase = sessionState?.current_phase ?? 0;
+  const pipelineStatus = sessionState?.pipeline_status ?? 'idle';
+
+  // §7.3 — empty kanban state
+  if (pipelineStatus === 'idle' && sessionState !== null) {
+    return (
+      <div className="board" id="board" style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', minHeight: 300 }}>
+        <div style={{
+          border: '1px dashed var(--border)',
+          padding: '40px 32px',
+          textAlign: 'center',
+          maxWidth: 480,
+          fontFamily: 'var(--font-mono)',
+        }}>
+          <p style={{ color: 'var(--text-2)', fontSize: 13, margin: '0 0 8px' }}>
+            The Enrichment Center reminds you that all test subjects must press <strong style={{ color: 'var(--ap-orange)' }}>'Create'</strong> to begin.
+          </p>
+          <p style={{ color: 'var(--text-4)', fontSize: 11, margin: 0, fontStyle: 'italic' }}>
+            No pipeline running. Configure a project on the Home screen.
+          </p>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="board" id="board">
@@ -285,11 +321,13 @@ export function KanbanBoard({ sessionState, events, onRetry, onSkip, focusMode, 
           <div
             key={phase}
             id={`col-${phase}`}
-            className={`col ${isCollapsed ? 'collapsed' : ''}`}
+            className={`col ${isCollapsed ? 'collapsed' : ''} ${colStateClass}`}
           >
-            <div className={`col-head ${colStateClass}`} onClick={() => toggleCollapse(phase)} style={{ cursor: 'pointer' }}>
-              <span className="col-head-text">{`Phase ${phase} — ${PHASE_LABELS[phase]}`}</span>
-              <span className="col-badge">{colStateLabel}</span>
+            <div className={`col-header ${colStateClass}`} onClick={() => toggleCollapse(phase)} style={{ cursor: 'pointer' }}>
+              <span className="col-phase-name">{`Phase ${phase} — ${PHASE_LABELS[phase]}`}</span>
+              <span className={`chip chip-${isDone ? 'green' : isActive ? 'orange' : 'muted'}`}>
+                <span className="dot" />{colStateLabel}
+              </span>
             </div>
 
             <div className="col-cards">

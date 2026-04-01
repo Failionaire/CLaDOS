@@ -227,6 +227,8 @@ export interface WsAgentStream {
   phase: number;
   agent: string;
   section: string;
+  /** Approximate cumulative output tokens (estimated from character count). */
+  tokens_out?: number;
 }
 
 export interface WsAgentDone {
@@ -281,6 +283,14 @@ export interface WsBudgetGate {
   projected_cost_usd: number;
 }
 
+export interface WsContextCompressed {
+  type: 'context:compressed';
+  phase: number;
+  agent: string;
+  artifact: string;
+  reason: 'reference_to_summary' | 'required_to_summary';
+}
+
 export interface WsStateSnapshot {
   type: 'state:snapshot';
   state: SessionState;
@@ -294,6 +304,7 @@ export type WsServerEvent =
   | WsAgentSkipped
   | WsGateOpen
   | WsBudgetGate
+  | WsContextCompressed
   | WsStateSnapshot;
 
 // ─── Gate actions (REST) ──────────────────────────────────────────────────────

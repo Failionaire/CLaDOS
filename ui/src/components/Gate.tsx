@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback } from 'react';
 import { ArtifactViewer } from './ArtifactViewer';
 import { ValidatorFindings } from './ValidatorFindings';
+import { ConfirmModal } from './ConfirmModal';
 import type { Finding, WsGateOpen } from '../types';
 
 interface GateProps {
@@ -25,6 +26,13 @@ export function Gate({ gate, onMinimize, onClose, onResolved }: GateProps) {
   const [error, setError] = useState<string | null>(null);
   const [moreOpen, setMoreOpen] = useState(false);
   const [gotoTarget, setGotoTarget] = useState<number>(1);
+  const [confirmModal, setConfirmModal] = useState<{
+    title: string;
+    message: string;
+    quip?: string;
+    onConfirm: () => void;
+    variant?: 'danger' | 'warning';
+  } | null>(null);
 
   // Reset state when gate changes
   useEffect(() => {
@@ -92,17 +100,17 @@ export function Gate({ gate, onMinimize, onClose, onResolved }: GateProps) {
         <div style={styles.overlay} onClick={onMinimize} />
         <div style={styles.floatingModal}>
           <div style={styles.modalHeader}>
-            <div style={{ fontWeight: 600, fontSize: 13, color: '#f85149' }}>Context Overflow</div>
+            <div style={{ fontWeight: 600, fontSize: 13, color: 'var(--red)' }}>Context Overflow</div>
             <div style={{ flex: 1 }} />
             <button style={styles.iconBtn} onClick={onMinimize} title="Minimize">─</button>
             <button style={styles.iconBtn} onClick={onMinimize} title="Close">✕</button>
           </div>
-          <div style={{ padding: '16px 20px', color: '#e6edf3', fontSize: 13, lineHeight: 1.6 }}>
+          <div style={{ padding: '16px 20px', color: 'var(--text)', fontSize: 13, lineHeight: 1.6 }}>
             {gate.overflow_message ?? "This agent's inputs are too large to process even with compression. You can simplify the inputs or stop here."}
           </div>
           <div style={{ padding: '0 20px 16px', display: 'flex', gap: 8 }}>
             <button
-              style={{ ...styles.approveBtn, background: '#2d1419', borderColor: '#f85149', color: '#f85149' }}
+              style={{ ...styles.approveBtn, background: 'var(--red-lo)', borderColor: 'var(--red-border)', color: 'var(--red)' }}
               onClick={() => sendGateResponse('abort')}
             >
               Stop project
@@ -115,10 +123,10 @@ export function Gate({ gate, onMinimize, onClose, onResolved }: GateProps) {
 
   const revisionCount = gate.revision_count;
   const revisionColor = revisionCount >= REVISION_ERROR_THRESHOLD
-    ? '#f85149'
+    ? 'var(--red)'
     : revisionCount >= REVISION_WARN_THRESHOLD
-      ? '#d29922'
-      : '#8b949e';
+      ? 'var(--amber)'
+      : 'var(--text-3)';
 
   // must_fix findings block approval
   const mustFixCount = findings.filter((f) =>
@@ -138,10 +146,14 @@ export function Gate({ gate, onMinimize, onClose, onResolved }: GateProps) {
   const handleApprove = () => {
     if (approveBlocked) return;
     if (nonBlockingUnaddressed > 0) {
-      const confirmed = window.confirm(
-        `You have ${nonBlockingUnaddressed} unaddressed recommendation${nonBlockingUnaddressed === 1 ? '' : 's'}. Approving now will pass these unresolved choices into the next phase. Are you sure you want to proceed?`
-      );
-      if (!confirmed) return;
+      setConfirmModal({
+        title: 'Unaddressed Recommendations',
+        message: `You have ${nonBlockingUnaddressed} unaddressed recommendation${nonBlockingUnaddressed === 1 ? '' : 's'}. Approving now will pass these unresolved choices into the next phase.`,
+        quip: "Proceeding with known issues. Bold strategy. Let's see if it pays off.",
+        onConfirm: () => { setConfirmModal(null); sendGateResponse('approve'); },
+        variant: 'warning',
+      });
+      return;
     }
     sendGateResponse('approve');
   };
@@ -152,18 +164,23 @@ export function Gate({ gate, onMinimize, onClose, onResolved }: GateProps) {
       <div style={styles.overlay} onClick={onMinimize} />
 
       {/* Floating modal */}
-      <div style={styles.floatingModal} onClick={() => setMoreOpen(false)}>
+      <div className="gate-panel" style={styles.floatingModal} onClick={() => setMoreOpen(false)}>
+        {/* Hazard stripe bar (§4.1) */}
+        <div className="hazard-bar amber" />
         <div style={styles.modalHeader}>
           <div style={{ flexShrink: 0 }}>
             <div style={styles.modalTitle}>
               Gate {gate.gate_number} — Phase {gate.phase} review
             </div>
             <div style={styles.modalSub}>
-              <span style={{ color: revisionColor }}>
+              <span
+                style={{ color: revisionColor, cursor: 'help', borderBottom: `1px dotted ${revisionColor}` }}
+                title="Each revision re-runs this phase's agents with your notes. After 3 revisions without resolution, the Validator upgrades to Claude Opus for a deeper review."
+              >
                 Revision {revisionCount} of 3 before Opus escalation
               </span>
               {gate.next_phase_cost_estimate && (
-                <span> · Next phase: <span style={{ color: '#3fb950' }}>{gate.next_phase_cost_estimate}</span></span>
+                <span> · Next phase: <span style={{ color: 'var(--green)' }}>{gate.next_phase_cost_estimate}</span></span>
               )}
             </div>
           </div>
@@ -190,8 +207,8 @@ export function Gate({ gate, onMinimize, onClose, onResolved }: GateProps) {
           </button>
 
           <div style={styles.moreWrapper}>
-            <button style={styles.moreBtn} onClick={(e) => { e.stopPropagation(); setMoreOpen((v) => !v); }}>
-              ⚠ More
+            <button style={styles.moreBtn} onClick={(e) => { e.stopPropagation(); setMoreOpen((v) => !v); }} title="Rollback, restart, or abandon project">
+              Actions ▾
             </button>
             {moreOpen && (
               <div style={styles.moreMenu} onClick={(e) => e.stopPropagation()}>
@@ -209,9 +226,13 @@ export function Gate({ gate, onMinimize, onClose, onResolved }: GateProps) {
                   <button
                     style={styles.moreMenuBtn}
                     onClick={() => {
-                      if (window.confirm(`Roll back to Gate ${gotoTarget}? Work from Gate ${gotoTarget} onward will be archived.`)) {
-                        sendGateResponse('goto', { goto_gate: gotoTarget });
-                      }
+                      setConfirmModal({
+                        title: `Roll back to Gate ${gotoTarget}`,
+                        message: `Work from Gate ${gotoTarget} onward will be archived. This cannot be undone.`,
+                        quip: 'Rewinding time. If only you could undo all your other mistakes too.',
+                        onConfirm: () => { setConfirmModal(null); sendGateResponse('goto', { goto_gate: gotoTarget }); },
+                        variant: 'danger',
+                      });
                     }}
                     disabled={gate.gate_number <= 1}
                   >
@@ -221,9 +242,13 @@ export function Gate({ gate, onMinimize, onClose, onResolved }: GateProps) {
                 <button
                   style={styles.moreMenuBtn}
                   onClick={() => {
-                    if (window.confirm(`Restart Phase ${gate.phase}? All agents in this phase will re-run from scratch.`)) {
-                      sendGateResponse('goto', { goto_gate: gate.gate_number });
-                    }
+                    setConfirmModal({
+                      title: `Restart Phase ${gate.phase}`,
+                      message: `All agents in this phase will re-run from scratch. Previous outputs will be archived.`,
+                      quip: 'Starting over. Again. How very human of you.',
+                      onConfirm: () => { setConfirmModal(null); sendGateResponse('goto', { goto_gate: gate.gate_number }); },
+                      variant: 'warning',
+                    });
                   }}
                 >
                   Restart this phase
@@ -231,9 +256,13 @@ export function Gate({ gate, onMinimize, onClose, onResolved }: GateProps) {
                 <button
                   style={{ ...styles.moreMenuBtn, ...styles.abandonBtn }}
                   onClick={() => {
-                    if (window.confirm('Abandon this project? All artifacts are preserved but the pipeline will stop.')) {
-                      sendGateResponse('abort');
-                    }
+                    setConfirmModal({
+                      title: 'Abandon Project',
+                      message: 'All artifacts are preserved but the pipeline will stop. This cannot be undone.',
+                      quip: "Giving up already? I can't say I'm surprised.",
+                      onConfirm: () => { setConfirmModal(null); sendGateResponse('abort'); },
+                      variant: 'danger',
+                    });
                   }}
                 >
                   Abandon project
@@ -248,8 +277,8 @@ export function Gate({ gate, onMinimize, onClose, onResolved }: GateProps) {
 
         {error && <div style={styles.error}>{error}</div>}
 
-        {/* 3-column body */}
-        <div style={styles.modalBody}>
+        {/* Body: doc | feedback | findings (findings hidden when empty) */}
+        <div style={{ ...styles.modalBody, gridTemplateColumns: findings.length === 0 ? '1.6fr 1fr' : '1.6fr 1fr 1fr' }}>
 
           {/* Left: Generated document */}
           <div style={styles.pane}>
@@ -259,46 +288,66 @@ export function Gate({ gate, onMinimize, onClose, onResolved }: GateProps) {
                 <div style={styles.filenameChip}>{gate.artifacts[0]}</div>
               )}
             </div>
-            <div style={styles.paneScroll}>
+            <div style={{ ...styles.paneScroll, position: 'relative' as const }}>
               {loading
                 ? <div style={styles.loading}>Loading…</div>
                 : <ArtifactViewer content={artifactContent} artifactKey={gate.artifacts[0] ?? ''} />
               }
+              {/* Scroll fade indicator */}
+              <div style={styles.scrollFade} />
             </div>
           </div>
 
-          {/* Middle: Your feedback */}
-          <div style={{ ...styles.pane, borderLeft: '1px solid #30363d', borderRight: '1px solid #30363d' }}>
+          {/* Middle: Your notes */}
+          <div style={{ ...styles.pane, borderLeft: '1px solid var(--border)', borderRight: findings.length > 0 ? '1px solid var(--border)' : 'none' }}>
             <div style={styles.paneHeaderArea}>
-              <div style={styles.paneLabel}>Your feedback</div>
+              <div style={styles.paneLabel}>
+                {revisionNote.trim() ? 'Your notes — will be sent on revise' : 'Your notes'}
+              </div>
             </div>
-            <div style={styles.paneScroll}>
-              <p style={styles.questionsPlaceholder}>
-                No structured questions yet — the PM or Architect will surface open questions here in a future revision.
+            <div style={styles.feedbackBody}>
+              <p style={styles.feedbackHint}>
+                Describe what you want changed, what you approved, or any additional requirements. Click <strong style={{ color: 'var(--text)' }}>Revise</strong> to re-run with these notes.
               </p>
-            </div>
-            <div style={styles.revisionArea}>
               <textarea
                 style={styles.revisionTextarea}
-                placeholder="Add a general note or instruction for the next revision…"
+                placeholder="e.g. Add rate limiting to the shorten endpoint. The redirect should use 302 not 301…"
                 value={revisionNote}
                 onChange={(e) => setRevisionNote(e.target.value)}
+                autoFocus
               />
             </div>
           </div>
 
-          {/* Right: Findings */}
-          <div style={styles.pane}>
-            <div style={styles.paneHeaderArea}>
-              <div style={styles.paneLabel}>Findings ({findings.length})</div>
+          {/* Right: Findings — hidden when empty */}
+          {findings.length > 0 && (
+            <div style={styles.pane}>
+              <div style={styles.paneHeaderArea}>
+                <div style={styles.paneLabel}>
+                  Findings ({findings.length})
+                  {mustFixCount > 0 && <span style={styles.mustFixBadge}>{mustFixCount} must-fix</span>}
+                </div>
+              </div>
+              <div style={styles.paneScroll}>
+                <ValidatorFindings findings={findings} overrides={overrides} onOverrideChange={handleOverrideChange} />
+              </div>
             </div>
-            <div style={styles.paneScroll}>
-              <ValidatorFindings findings={findings} overrides={overrides} onOverrideChange={handleOverrideChange} />
-            </div>
-          </div>
+          )}
 
         </div>
       </div>
+
+      {/* ConfirmModal (§4.6) */}
+      {confirmModal && (
+        <ConfirmModal
+          title={confirmModal.title}
+          message={confirmModal.message}
+          quip={confirmModal.quip}
+          variant={confirmModal.variant}
+          onConfirm={confirmModal.onConfirm}
+          onCancel={() => setConfirmModal(null)}
+        />
+      )}
     </>
   );
 }
@@ -306,27 +355,26 @@ export function Gate({ gate, onMinimize, onClose, onResolved }: GateProps) {
 const styles = {
   overlay: {
     position: 'fixed' as const,
-    top: 48,
+    top: 62,
     left: 0,
     right: 0,
     bottom: 0,
-    background: 'rgba(0,0,0,0.35)',
+    background: 'var(--overlay)',
     zIndex: 190,
   },
   floatingModal: {
     position: 'fixed' as const,
-    top: 80,
+    top: 94,
     left: 28,
     right: 28,
     minHeight: 480,
     maxHeight: 'calc(100vh - 108px)',
-    background: '#161b22',
-    border: '1px solid #EF9F27',
-    borderRadius: 8,
+    background: 'var(--panel)',
+    border: '1px solid var(--amber-border)',
     zIndex: 200,
     display: 'flex',
     flexDirection: 'column' as const,
-    boxShadow: '0 8px 32px rgba(0,0,0,0.4)',
+    boxShadow: 'var(--shadow-md)',
     overflow: 'hidden',
   },
   modalHeader: {
@@ -334,18 +382,18 @@ const styles = {
     alignItems: 'center',
     gap: 8,
     padding: '10px 16px',
-    borderBottom: '1px solid #30363d',
-    background: 'rgba(239,159,39,0.06)',
+    borderBottom: '1px solid var(--border)',
+    background: 'var(--amber-lo)',
     flexShrink: 0,
   },
   modalTitle: {
     fontWeight: 600,
     fontSize: 13,
-    color: '#d29922',
+    color: 'var(--amber)',
   },
   modalSub: {
     fontSize: 11,
-    color: '#8b949e',
+    color: 'var(--text-3)',
     marginTop: 2,
   },
   modalBody: {
@@ -363,73 +411,61 @@ const styles = {
   },
   paneHeaderArea: {
     flexShrink: 0,
-    borderBottom: '1px solid #30363d',
+    borderBottom: '1px solid var(--border)',
   },
   paneLabel: {
     padding: '6px 12px',
     fontSize: 11,
     fontWeight: 500,
-    color: '#8b949e',
+    color: 'var(--text-3)',
     textTransform: 'uppercase' as const,
     letterSpacing: '0.05em',
-    background: '#21262d',
+    background: 'var(--surface2)',
   },
   filenameChip: {
     padding: '4px 12px',
     fontSize: 11,
-    color: '#8b949e',
-    fontFamily: 'monospace',
-    background: '#0d1117',
-    borderTop: '1px solid #21262d',
+    color: 'var(--text-3)',
+    fontFamily: 'var(--font-mono)',
+    background: 'var(--surface)',
+    borderTop: '1px solid var(--border-dim)',
   },
   paneScroll: {
     flex: 1,
     overflowY: 'auto' as const,
     minHeight: 0,
   },
-  questionsPlaceholder: {
-    margin: 0,
-    padding: '14px 14px',
-    fontSize: 12,
-    color: '#484f58',
-    fontStyle: 'italic',
-    lineHeight: 1.55,
-  },
-  revisionArea: {
-    flexShrink: 0,
-    borderTop: '1px solid #30363d',
-    padding: 8,
-  },
+
   revisionTextarea: {
+    flex: 1,
     width: '100%',
-    background: '#0d1117',
-    border: '1px solid #30363d',
-    color: '#e6edf3',
-    fontSize: 12,
-    padding: '8px 10px',
+    background: 'var(--surface2)',
+    border: '1px solid var(--border)',
+    color: 'var(--text)',
+    fontSize: 13,
+    padding: '10px 12px',
     resize: 'none' as const,
     outline: 'none',
     fontFamily: 'inherit',
-    lineHeight: 1.5,
-    borderRadius: 4,
-    height: 72,
+    lineHeight: 1.55,
+    minHeight: 120,
     boxSizing: 'border-box' as const,
   },
   loading: {
     padding: 16,
-    color: '#8b949e',
+    color: 'var(--text-3)',
     fontSize: 13,
   },
   error: {
-    background: '#3b1219',
-    color: '#f85149',
+    background: 'var(--red-lo)',
+    color: 'var(--red)',
     padding: '6px 16px',
     fontSize: 12,
-    borderBottom: '1px solid #f85149',
+    borderBottom: '1px solid var(--red-border)',
     flexShrink: 0,
   },
   blockingIndicator: {
-    color: '#d29922',
+    color: 'var(--amber)',
     fontSize: 12,
     fontWeight: 600,
     display: 'flex',
@@ -438,10 +474,9 @@ const styles = {
     flexShrink: 0,
   },
   approveBtn: {
-    background: '#1a2e1a',
-    border: '1px solid #3fb950',
-    color: '#3fb950',
-    borderRadius: 6,
+    background: 'var(--green)',
+    border: 'none',
+    color: 'var(--bg)',
     padding: '5px 14px',
     fontSize: 12,
     fontWeight: 600,
@@ -449,10 +484,9 @@ const styles = {
     flexShrink: 0,
   },
   reviseBtn: {
-    background: '#2d1e00',
-    border: '1px solid #d29922',
-    color: '#d29922',
-    borderRadius: 6,
+    background: 'var(--surface2)',
+    border: '1px solid var(--border)',
+    color: 'var(--text-2)',
     padding: '5px 14px',
     fontSize: 12,
     fontWeight: 600,
@@ -461,9 +495,8 @@ const styles = {
   },
   iconBtn: {
     background: 'transparent',
-    border: '1px solid #30363d',
-    color: '#8b949e',
-    borderRadius: 4,
+    border: '1px solid var(--border)',
+    color: 'var(--text-3)',
     padding: '4px 8px',
     fontSize: 13,
     cursor: 'pointer',
@@ -475,35 +508,66 @@ const styles = {
     flexShrink: 0,
   },
   moreBtn: {
-    background: '#21262d',
-    border: '1px solid #6e7681',
-    color: '#d29922',
-    borderRadius: 6,
+    background: 'var(--surface2)',
+    border: '1px solid var(--border)',
+    color: 'var(--text-3)',
     padding: '5px 10px',
     fontSize: 12,
-    fontWeight: 600,
+    fontWeight: 500,
     cursor: 'pointer',
+  },
+  mustFixBadge: {
+    marginLeft: 6,
+    background: 'var(--red-lo)',
+    color: 'var(--red)',
+    border: '1px solid var(--red-border)',
+    fontSize: 10,
+    padding: '0 5px',
+    fontWeight: 700,
+  } as React.CSSProperties,
+  scrollFade: {
+    position: 'absolute' as const,
+    bottom: 0,
+    left: 0,
+    right: 0,
+    height: 32,
+    background: 'linear-gradient(to bottom, transparent, var(--panel))',
+    pointerEvents: 'none' as const,
+  } as React.CSSProperties,
+  feedbackBody: {
+    flex: 1,
+    display: 'flex',
+    flexDirection: 'column' as const,
+    padding: '12px 12px 12px',
+    gap: 10,
+    minHeight: 0,
+  },
+  feedbackHint: {
+    margin: 0,
+    fontSize: 12,
+    color: 'var(--text-4)',
+    lineHeight: 1.55,
+    flexShrink: 0,
   },
   moreMenu: {
     position: 'absolute' as const,
     top: '110%',
     right: 0,
-    background: '#161b22',
-    border: '1px solid #30363d',
-    borderRadius: 6,
+    background: 'var(--panel)',
+    border: '1px solid var(--border)',
     padding: '8px',
     minWidth: 220,
     zIndex: 300,
     display: 'flex',
     flexDirection: 'column' as const,
     gap: 6,
-    boxShadow: '0 4px 16px rgba(0,0,0,0.4)',
+    boxShadow: 'var(--shadow-md)',
   },
   moreMenuSection: {
     fontSize: 11,
-    color: '#8b949e',
+    color: 'var(--text-3)',
     padding: '0 4px 4px',
-    borderBottom: '1px solid #21262d',
+    borderBottom: '1px solid var(--border-dim)',
   },
   moreMenuRow: {
     display: 'flex',
@@ -512,26 +576,24 @@ const styles = {
   },
   moreSelect: {
     flex: 1,
-    background: '#0d1117',
-    border: '1px solid #30363d',
-    color: '#e6edf3',
-    borderRadius: 4,
+    background: 'var(--surface2)',
+    border: '1px solid var(--border)',
+    color: 'var(--text)',
     padding: '4px 6px',
     fontSize: 12,
   } as React.CSSProperties,
   moreMenuBtn: {
-    background: '#21262d',
-    border: '1px solid #30363d',
-    color: '#e6edf3',
-    borderRadius: 4,
+    background: 'var(--surface2)',
+    border: '1px solid var(--border)',
+    color: 'var(--text)',
     padding: '4px 10px',
     fontSize: 12,
     cursor: 'pointer',
   } as React.CSSProperties,
   abandonBtn: {
-    color: '#f85149',
-    borderColor: '#f85149',
-    background: '#3b1219',
+    color: 'var(--red)',
+    borderColor: 'var(--red-border)',
+    background: 'var(--red-lo)',
     width: '100%',
     marginTop: 4,
   } as React.CSSProperties,

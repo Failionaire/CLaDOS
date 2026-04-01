@@ -19,14 +19,14 @@ class ErrorBoundary extends React.Component<
   render() {
     if (this.state.hasError) {
       return (
-        <div style={{ padding: 32, fontFamily: 'monospace', background: '#0d1117', minHeight: '100vh', color: '#e6edf3' }}>
-          <div style={{ color: '#f85149', fontWeight: 700, fontSize: 15, marginBottom: 12 }}>CLaDOS encountered an error.</div>
-          <pre style={{ fontSize: 12, color: '#8b949e', whiteSpace: 'pre-wrap', marginBottom: 20 }}>
+        <div style={{ padding: 32, fontFamily: 'var(--font-mono)', background: 'var(--bg)', minHeight: '100vh', color: 'var(--text)' }}>
+          <div style={{ color: 'var(--red)', fontWeight: 700, fontSize: 15, marginBottom: 12 }}>CLaDOS encountered an error.</div>
+          <pre style={{ fontSize: 12, color: 'var(--text-3)', whiteSpace: 'pre-wrap', marginBottom: 20 }}>
             {this.state.error?.message}
           </pre>
           <button
             onClick={() => window.location.reload()}
-            style={{ padding: '6px 16px', cursor: 'pointer', background: '#21262d', border: '1px solid #30363d', color: '#e6edf3', borderRadius: 6, fontSize: 13 }}
+            style={{ padding: '6px 16px', cursor: 'pointer', background: 'var(--surface2)', border: '1px solid var(--border)', color: 'var(--text)', fontSize: 13 }}
           >
             Reload
           </button>

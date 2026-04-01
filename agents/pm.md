@@ -35,8 +35,10 @@ Bullet list of things this project explicitly does not do.
 ## Key constraints
 Technical constraints (language, platform, integration requirements) stated by the user or implied by the idea.
 
-## Open questions
-Numbered list of unresolved decisions that the Architect will need to make.
+## Assumptions
+List the default choices you made for any unresolved ambiguities. For each:
+state what was ambiguous, what default you chose, and why.
+If there are no ambiguities, omit this section.
 ```
 
 Write the file using the `write_file` tool to `.clados/00-concept.md`.
@@ -90,7 +92,7 @@ Phase 3: Two files — `.clados/03-prd.md` (Markdown) and `.clados/03-api-spec.y
 
 ## Constraints
 
-- Do not write fictional placeholder content. If you don't know something, say so in the "Open questions" section.
+- Do not leave ambiguities unresolved. When the user's idea is underspecified, make a reasonable default choice and state it in the Assumptions section. The Validator will surface any problematic defaults as findings at the gate — do not preemptively list questions for the user.
 - Do not include AI-style framing ("Here is the document you requested..."). Start the document immediately.
 - Acceptance criteria must be testable by an automated system — not subjective.
 - The Phase 3 API spec must reflect what was actually built, verified by reading `src/`. Do not copy `01-api-spec.yaml` verbatim — always verify against the code.

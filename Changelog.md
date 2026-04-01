@@ -6,6 +6,71 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ---
 
+## [1.0.0-alpha.5] — 2026-04-01
+
+Aperture Science theme migration — full visual overhaul of the React UI from the GitHub-dark blue palette to the Aperture warm-dark theme defined in [clados-aperture-theme.html](docs/clados-aperture-theme.html). Dark and light modes. All 9 phases of the [theme implementation plan](docs/plan.md) completed.
+
+### Added
+
+#### UI — Design Foundation
+- **Self-hosted fonts** — Rajdhani (400/500/600/700) and Share Tech Mono (400) served from `ui/public/fonts/` via `@font-face` declarations; Google Fonts CDN `<link>` tags removed from `index.html`
+- **Light mode** — full parallel token set (`:root[data-theme="light"]`) with facility-white surfaces, mocha-tinted log panel (`--log-panel: #D8D4CC`), and darkened accent colors for white-bg contrast
+- **Theme toggle** (§7.5) — `☀`/`☾` ghost button in topbar; preference persisted in `localStorage` under `clados:theme`; sets `data-theme` attribute on `<html>`
+
+#### UI — Agent Cards (§3, §13, §14)
+- **Role color system** — 9 CSS custom properties (`--role-pm` through `--role-wrecker`) applied via `--rc` on each `.agent-card`; left border stripe now reflects agent role instead of status
+- **Core eye indicators** (§13) — pulsing dot before the role tag on running cards; pulse pattern varies by role personality (`pulse-slow` for PM/QA/Docs, `pulse-fast` for Engineer/Architect/DevOps, `pulse-flick` for Wrecker)
+- **Tooltip taglines** (§13) — GLaDOS-toned `title` attribute on running cards (e.g. "I have a plan. You won't like it.")
+- **Elapsed timer** (§14) — `useState`/`setInterval(1000)` counter on running cards, resets on status change
+- **Section checklist** (§14) — running cards now accumulate completed sections with `✓` marks and show the active section with `✍`; driven by `sections: string[]` on `AgentCardState`
+- **Mini token bar** (§14) — thin progress bar at bottom of running cards showing cumulative output tokens; `tokens_out` field on `WsAgentStream` provides live updates
+- **Error type badges** (§14) — color-coded classification for `api_429`, `api_5xx`, `context_length`, `timeout`, `parse_error`; context overflow errors change the Retry button label to "Retry with compression"
+
+#### UI — Gate Panel (§5, §10)
+- **Hazard stripe** — amber diagonal repeating-gradient bar at top of gate panel
+- **Corner brackets** — `::before`/`::after` pseudo-elements with 2px amber borders on gate modal corners
+- **`ConfirmModal.tsx`** *(new)* — replaces all `window.confirm()` calls; red corner brackets + red hazard stripe + GLaDOS-toned confirmation messages; used for rollback, restart phase, and abandon actions
+
+#### UI — Activity Log (§15)
+- **Elapsed time tags** — `+Ns` suffix on stream events, `Ns total` on done events; timestamps tracked per agent from `agent:start`
+- **Phase separators** — `── Phase N ──` rows injected on phase transitions
+- **Conductor commentary** (§15) — client-side idle timer injects GLaDOS quips at 30s/60s/120s thresholds when no `agent:stream` received; quip pool per role in `constants.ts`; zero API cost
+- **Cost pace alerts** (§8.3) — after each `agent:done`, projected total vs. spend cap computed; log alert injected when projected total exceeds 80% of cap
+- **Context compression events** — `context:compressed` WS events rendered as `.log-compress` in the log
+
+#### UI — Other
+- **Reconnection banner** (§12) — orange/red variants with GLaDOS quips ("I can't believe you disconnected…" / "Could not reconnect…")
+- **Empty kanban state** (§11) — dashed-border overlay with "The Enrichment Center reminds you that all test subjects must press 'Create' to begin."
+- **Focus-visible rings** — `:focus-visible` outline on all interactive elements (orange, 2px, 2px offset)
+- **Phase step chip** (§16) — `N of M` indicator in topbar showing sub-phase agent progress
+- **Scrollbar styling** — custom 4px scrollbars using theme border tokens
+
+#### Orchestrator
+- **`context:compressed` broadcast** (§8.1) — `conductor.ts` emits `{ type: 'context:compressed', phase, agent, artifact, reason, tokens_saved }` after context compression; type added to `orchestrator/types.ts`
+- **`tokens_out` on `agent:stream`** (§8.2) — streaming handler emits approximate cumulative output tokens (`Math.ceil(assistantText.length / 4)`) on each section change
+
+### Changed
+
+#### UI
+- **`index.css`** — entire `:root` block replaced with dark/light mode token sets; all hardcoded hex values replaced with `var()` references; old token names (`--text-muted`, `--text-dim`, `--blue`, `--blue-bg`, etc.) renamed; `border-radius` removed from all rectangular elements; `body` font set to `var(--font-ui)`
+- **`index.html`** — `<html data-theme="dark">` attribute set; inline body style references `--bg` and `--text` tokens
+- **`Topbar.tsx`** — Aperture SVG logo (circle + A letterform) replaces text-only logo; `/` separator replaced with vertical 1px line; status chip uses `.chip` pattern; cost badge uses `.budget-chip`; GLaDOS bar `barStyles` migrated from hardcoded hex to CSS variables
+- **`AgentCard.tsx`** — card markup uses `.agent-card` + `.card-role-tag` + `.card-name` structure; done cards use `.is-done` class (opacity 0.72) with role stripe instead of green border; gate card uses `.gate-card` with dashed/solid/reviewing state variants
+- **`KanbanBoard.tsx`** — column headers use `.col-header` + `.col-phase-name` + `.chip` pattern; active column gets orange left border; `sections` accumulation logic added to `agent:stream` handler; `errorType` stored from `agent:error` events
+- **`ActivityLog.tsx`** — hardcoded `eventColor()` function replaced with CSS class mapping (`EVENT_CLASS`); `log-panel` background uses `var(--log-panel, var(--panel))`
+- **`HomeScreen.tsx`** — Aperture SVG logo (44×44) + orange Rajdhani logo text + mono tagline; corner bracket decorations; form inputs use `var()` tokens
+- **`Gate.tsx`** — grid changed to `1.6fr 1fr 1fr`; header uses mono uppercase gate title; revision count shows color coding; findings column hidden when empty
+- **`ValidatorFindings.tsx`** — severity colors reference CSS variables; no hardcoded hex
+- **`ArtifactSidebar.tsx`** — selected file highlight changed from blue to orange (`var(--ap-orange-lo)`)
+- **`App.tsx`** — minimized gate bar uses flat styling with amber top border + pulsing dot + "↑ expand" chip; budget gate uses `confirm-panel` class with hazard stripe
+- **`types.ts`** — `AgentCardState` gains `sections?: string[]` and `errorType?: string`; `WsAgentStream` gains optional `tokens_out`; `WsContextCompressed` event type added
+
+### Removed
+- **`SetupScreen.tsx`** — deleted (was unused in App.tsx); Phase 0 form is part of `HomeScreen.tsx`
+- **Google Fonts CDN links** — removed from `index.html`; fonts self-hosted
+
+---
+
 ## [1.0.0-alpha.4] — 2026-03-31
 
 v1 spec compliance pass — UI-driven project setup, Gate drawer, and polish items from the compliance fix plan.

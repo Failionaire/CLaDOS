@@ -95,6 +95,8 @@ export interface WsAgentStream {
   phase: number;
   agent: string;
   section: string;
+  /** Approximate cumulative output tokens (estimated from character count). */
+  tokens_out?: number;
 }
 
 export interface WsAgentDone {
@@ -148,6 +150,14 @@ export interface WsBudgetGate {
   projected_cost_usd: number;
 }
 
+export interface WsContextCompressed {
+  type: 'context:compressed';
+  phase: number;
+  agent: string;
+  artifact: string;
+  reason: 'reference_to_summary' | 'required_to_summary';
+}
+
 export interface WsStateSnapshot {
   type: 'state:snapshot';
   state: SessionState;
@@ -161,6 +171,7 @@ export type WsEvent =
   | WsAgentSkipped
   | WsGateOpen
   | WsBudgetGate
+  | WsContextCompressed
   | WsStateSnapshot;
 
 // AgentStatus tracks per-agent UI state derived from WS events
@@ -171,12 +182,14 @@ export interface AgentCardState {
   phase: number;
   status: AgentCardStatus;
   currentSection: string | null;
+  sections?: string[];
   model: string | null;
   inputTokens: number;
   outputTokens: number;
   costUsd: number;
   artifactKey: string | null;
   errorMessage: string | null;
+  errorType?: string;
   contextCompressed: boolean;
   fullArtifactsFetched: number;
   isSkippable: boolean;

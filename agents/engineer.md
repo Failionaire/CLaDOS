@@ -100,6 +100,8 @@ This file must reflect how the server actually runs, not placeholder values.
 - `package.json` (with all dependencies from `01-architecture.md`)
 - `tsconfig.json` for the generated project
 
+These are the only files you write in Phase 1. No additional files.
+
 **Phase 2 outputs**:
 - `.clados/02-build/backend-engineer-manifest.json` (Pass 1)
 - All implementation files in `src/` (Pass 2)
@@ -107,6 +109,9 @@ This file must reflect how the server actually runs, not placeholder values.
 
 ## Constraints
 
+- Do not write README files, GETTING_STARTED files, status documents, completion summaries, checklists, or any file whose purpose is to explain what you did. The only documentation you write is inline code comments.
+- Do not write test files (anything under `tests/`). Test writing is handled by the QA agent in Phase 2.
+- Only write the files listed in the Phase 1 Output schema. Do not create additional files beyond that list without a specific instruction to do so in the context prefix.
 - All routes declared in `01-api-spec.yaml` must be registered. Use explicit `app.get/post/put/patch/delete()` calls or one level of `app.use('/prefix', router)` — no dynamic route loading (fs.readdirSync etc.).
 - Include `express-openapi-validator` middleware. It must be configured to enforce the spec on every request.
 - Seed a test user behind a `NODE_ENV !== 'production'` guard, or in a separate `db:seed:test` npm script that is never run by the production startup sequence. Never unconditionally seed test credentials in a migration that runs on `npm start`.

@@ -1678,6 +1678,16 @@ export class Conductor {
       await this.session.update(projectDir, {
         context_compression_log: [...(freshState.context_compression_log ?? []), ...compressionLog],
       });
+      // §8.1: Broadcast context compression events to the UI
+      for (const entry of compressionLog) {
+        this.broadcast({
+          type: 'context:compressed',
+          phase: entry.phase,
+          agent: entry.agent,
+          artifact: entry.artifact,
+          reason: entry.reason,
+        });
+      }
     }
 
     // Build context message
@@ -1867,7 +1877,7 @@ export class Conductor {
               const headingMatch = completedLines.match(/^## (.+)$/m);
               if (headingMatch && headingMatch[1] !== currentSection) {
                 currentSection = headingMatch[1]!;
-                this.broadcast({ type: 'agent:stream', phase, agent: errorKey ?? role, section: currentSection });
+                this.broadcast({ type: 'agent:stream', phase, agent: errorKey ?? role, section: currentSection, tokens_out: Math.ceil(assistantText.length / 4) });
               }
             }
           }
@@ -1923,6 +1933,14 @@ export class Conductor {
 
     if (writtenPaths.length === 0) {
       this.logger.warn('agent.no_writes', `${role} (phase ${phase}) made no write_file calls — inferring artifact path`);
+      // Safety net: if the inferred path is inside .clados/ and we have text, write it to disk
+      // so that loadValidatorFindings() and other readers can access it via fs.existsSync().
+      const inferredAbsolute = path.resolve(projectDir, primaryArtifactPath);
+      const inferredRelative = path.relative(claDosDir, inferredAbsolute);
+      if (!inferredRelative.startsWith('..') && !path.isAbsolute(inferredRelative) && finalText.trim().length > 0) {
+        await fs.promises.mkdir(path.dirname(inferredAbsolute), { recursive: true });
+        await writeFileAtomic(inferredAbsolute, finalText, { encoding: 'utf8' });
+      }
     }
 
     const costUsd = calculateCostUsd(model, totalInput, totalOutput);

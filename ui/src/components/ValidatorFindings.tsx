@@ -15,9 +15,9 @@ const SEVERITY_LABELS: Record<FindingSeverity, string> = {
 };
 
 const SEVERITY_COLORS: Record<FindingSeverity, string> = {
-  must_fix: '#f85149',
-  should_fix: '#d29922',
-  suggestion: '#58a6ff',
+  must_fix: 'var(--red)',
+  should_fix: 'var(--amber)',
+  suggestion: 'var(--ap-blue)',
 };
 
 const STATUS_LABEL: Record<string, string> = {
@@ -85,10 +85,9 @@ const styles = {
     padding: 12,
   },
   item: {
-    background: '#21262d',
-    borderRadius: 6,
+    background: 'var(--surface2)',
     padding: '8px 10px',
-    border: '1px solid #30363d',
+    border: '1px solid var(--border)',
   },
   itemHeader: {
     display: 'flex',
@@ -110,37 +109,37 @@ const styles = {
   },
   statusLabel: {
     fontSize: 11,
-    color: '#8b949e',
+    color: 'var(--text-3)',
     marginLeft: 4,
   },
   overrideLabel: {
     marginLeft: 'auto',
     fontSize: 11,
-    color: '#8b949e',
+    color: 'var(--text-3)',
     cursor: 'pointer',
     display: 'flex',
     alignItems: 'center',
   },
   category: {
     fontSize: 11,
-    color: '#8b949e',
+    color: 'var(--text-3)',
     marginBottom: 2,
     fontWeight: 500,
   },
   description: {
     fontSize: 13,
-    color: '#e6edf3',
+    color: 'var(--text)',
     lineHeight: 1.4,
   },
   location: {
     marginTop: 4,
     fontSize: 11,
-    color: '#8b949e',
-    fontFamily: 'monospace',
+    color: 'var(--text-3)',
+    fontFamily: 'var(--font-mono)',
   },
   empty: {
     padding: 16,
-    color: '#8b949e',
+    color: 'var(--text-3)',
     fontSize: 13,
   },
 };

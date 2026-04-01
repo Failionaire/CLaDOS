@@ -17,6 +17,15 @@ export default function App() {
   const [newCapInput, setNewCapInput] = useState('');
   const [focusMode, setFocusMode] = useState(false);
   const [sidebarOpen, setSidebarOpen] = useState(false);
+  // Light/dark theme toggle (§7.5)
+  const [theme, setTheme] = useState<'dark' | 'light'>(() => {
+    try { return (localStorage.getItem('clados:theme') as 'dark' | 'light') ?? 'dark'; } catch { return 'dark'; }
+  });
+  useEffect(() => {
+    document.documentElement.setAttribute('data-theme', theme);
+    try { localStorage.setItem('clados:theme', theme); } catch {}
+  }, [theme]);
+  const toggleTheme = () => setTheme(t => t === 'dark' ? 'light' : 'dark');
   // Optimistic card state: set when gate is approved/revised so the board clears before WS events
   const [resolvedGate, setResolvedGate] = useState<{ phase: number; approved: boolean } | null>(null);
 
@@ -77,7 +86,7 @@ export default function App() {
   const showHome = connectionStatus === 'connected' && sessionState === null;
 
   return (
-    <div style={{ minHeight: '100vh', display: 'flex', flexDirection: 'column', paddingTop: '48px' }}>
+    <div style={{ minHeight: '100vh', display: 'flex', flexDirection: 'column', paddingTop: '62px' }}>
       <Topbar
         sessionState={sessionState}
         connectionStatus={connectionStatus}
@@ -88,6 +97,8 @@ export default function App() {
         onToggleFocus={() => setFocusMode((v) => !v)}
         onToggleSidebar={() => setSidebarOpen((v) => !v)}
         sidebarOpen={sidebarOpen}
+        theme={theme}
+        onToggleTheme={toggleTheme}
       />
 
       <KanbanBoard
@@ -105,13 +116,14 @@ export default function App() {
       {/* Minimized gate bar — shows below the board when gate is pending but modal is hidden */}
       {!gateVisible && currentGate && (
         <div
+          className="gate-minimized-bar"
           style={minimizedBarStyles.bar}
           onClick={() => setGateVisible(true)}
           role="button"
           tabIndex={0}
           onKeyDown={(e) => e.key === 'Enter' && setGateVisible(true)}
         >
-          <div style={minimizedBarStyles.dot} />
+          <span className="dot" style={{ width: 7, height: 7, borderRadius: '50%', background: 'var(--amber)', flexShrink: 0, animation: 'pulse-dot 1s ease-in-out infinite' }} />
           <div style={minimizedBarStyles.label}>
             Gate {currentGate.gate_number} — awaiting review
           </div>
@@ -119,7 +131,7 @@ export default function App() {
             Revision {currentGate.revision_count ?? 0} of 3
             {currentGate.next_phase_cost_estimate && ` · next phase ${currentGate.next_phase_cost_estimate}`}
           </div>
-          <div style={minimizedBarStyles.expandChip}>↑ expand</div>
+          <span className="chip chip-muted">↑ expand</span>
         </div>
       )}
 
@@ -147,9 +159,13 @@ export default function App() {
 
       {budgetGate && (
         <div style={budgetGateStyles.overlay}>
-          <div style={budgetGateStyles.modal}>
+          <div className="confirm-panel" style={budgetGateStyles.modal}>
+            <div className="hazard-bar amber" />
             <div style={budgetGateStyles.title}>Budget Gate</div>
             <div style={budgetGateStyles.body}>
+              <p style={{ margin: '0 0 4px', fontStyle: 'italic', color: 'var(--text-3)', fontSize: 12 }}>
+                Science isn't free. Neither is this.
+              </p>
               <p style={{ margin: '0 0 12px' }}>
                 Agent <strong>{budgetGate.blocked_agent}</strong> is blocked — projected cost exceeds your remaining budget.
               </p>
@@ -167,7 +183,7 @@ export default function App() {
               </div>
             </div>
             <div style={{ marginTop: 12 }}>
-              <label style={{ display: 'block', fontSize: 12, color: '#8b949e', marginBottom: 4 }}>
+              <label style={{ display: 'block', fontSize: 12, color: 'var(--text-3)', marginBottom: 4 }}>
                 New spend cap ($)
               </label>
               <input
@@ -181,7 +197,7 @@ export default function App() {
             </div>
             <div style={budgetGateStyles.actions}>
               <button
-                style={budgetGateStyles.continueBtn}
+                className="btn btn-primary"
                 onClick={async () => {
                   const cap = parseFloat(newCapInput);
                   if (isNaN(cap) || cap <= 0) return;
@@ -198,7 +214,7 @@ export default function App() {
                 Allow &amp; continue
               </button>
               <button
-                style={budgetGateStyles.stopBtn}
+                className="btn btn-danger"
                 onClick={async () => {
                   try {
                     await fetch('/budget/abort', {
@@ -223,9 +239,9 @@ const minimizedBarStyles = {
   bar: {
     margin: '0 16px 12px',
     padding: '9px 14px',
-    background: '#161b22',
-    border: '1px solid #EF9F27',
-    borderRadius: 8,
+    background: 'var(--surface)',
+    borderTop: '2px solid var(--amber)',
+    border: '1px solid var(--amber-border)',
     display: 'flex',
     alignItems: 'center',
     gap: 10,
@@ -235,25 +251,24 @@ const minimizedBarStyles = {
     width: 7,
     height: 7,
     borderRadius: '50%',
-    background: '#EF9F27',
+    background: 'var(--amber)',
     flexShrink: 0,
   },
   label: {
     fontSize: 12,
     fontWeight: 500,
-    color: '#d29922',
+    color: 'var(--amber)',
     flex: 1,
   },
   sub: {
     fontSize: 11,
-    color: '#8b949e',
+    color: 'var(--text-3)',
   },
   expandChip: {
     fontSize: 11,
-    color: '#8b949e',
+    color: 'var(--text-3)',
     padding: '3px 8px',
-    border: '1px solid #30363d',
-    borderRadius: 6,
+    border: '1px solid var(--border)',
   },
 };
 
@@ -261,24 +276,23 @@ const budgetGateStyles = {
   overlay: {
     position: 'fixed' as const,
     inset: 0,
-    background: 'rgba(0,0,0,0.6)',
+    background: 'var(--overlay)',
     display: 'flex',
     alignItems: 'center',
     justifyContent: 'center',
     zIndex: 400,
   },
   modal: {
-    background: '#161b22',
-    border: '1px solid #d29922',
-    borderRadius: 8,
+    background: 'var(--panel)',
+    border: '1px solid var(--amber-border)',
     padding: 24,
     width: 380,
-    color: '#e6edf3',
+    color: 'var(--text)',
   },
   title: {
     fontWeight: 700,
     fontSize: 15,
-    color: '#d29922',
+    color: 'var(--amber)',
     marginBottom: 16,
   },
   body: {
@@ -290,7 +304,7 @@ const budgetGateStyles = {
     display: 'flex',
     justifyContent: 'space-between',
     fontSize: 12,
-    color: '#8b949e',
+    color: 'var(--text-3)',
     padding: '3px 0',
   },
   actions: {
@@ -299,29 +313,26 @@ const budgetGateStyles = {
     justifyContent: 'flex-end',
   },
   continueBtn: {
-    background: '#1a2e1a',
-    border: '1px solid #3fb950',
-    color: '#3fb950',
-    borderRadius: 6,
+    background: 'var(--green-lo)',
+    border: '1px solid var(--green-border)',
+    color: 'var(--green)',
     padding: '6px 14px',
     fontSize: 13,
     cursor: 'pointer',
   },
   capInput: {
     width: '100%',
-    background: '#0d1117',
-    border: '1px solid #30363d',
-    borderRadius: 6,
-    color: '#e6edf3',
+    background: 'var(--surface2)',
+    border: '1px solid var(--border)',
+    color: 'var(--text)',
     padding: '6px 10px',
     fontSize: 13,
     boxSizing: 'border-box' as const,
   },
   stopBtn: {
-    background: '#3b1219',
-    border: '1px solid #f85149',
-    color: '#f85149',
-    borderRadius: 6,
+    background: 'var(--red-lo)',
+    border: '1px solid var(--red-border)',
+    color: 'var(--red)',
     padding: '6px 14px',
     fontSize: 13,
     cursor: 'pointer',

@@ -99,9 +99,15 @@ export function HomeScreen() {
 
   return (
     <div style={styles.overlay}>
-      <div style={styles.card}>
+      <div className="home-card" style={styles.card}>
+        {/* Aperture logo (§5.2) */}
         <div style={styles.logoRow}>
-          <span style={styles.logo}>CLaDOS</span>
+          <svg width="44" height="44" viewBox="0 0 20 20" fill="none" style={{ flexShrink: 0 }}>
+            <circle cx="10" cy="10" r="9" stroke="var(--ap-orange)" strokeWidth="1.4" fill="none"/>
+            <path d="M10 4 L6.5 16 M10 4 L13.5 16 M7.8 12 L12.2 12"
+                  stroke="var(--ap-orange)" strokeWidth="1.4" strokeLinecap="round"/>
+          </svg>
+          <span className="home-logo-text">CLaDOS</span>
         </div>
         <div style={styles.tagline}>Multi-agent software development pipeline</div>
 
@@ -181,7 +187,7 @@ export function HomeScreen() {
               type="checkbox"
               checked={securityEnabled}
               onChange={(e) => setSecurityEnabled(e.target.checked)}
-              style={{ accentColor: '#f85149' }}
+              style={{ accentColor: 'var(--red)' }}
               disabled={submitting}
             />
             <span>Security</span>
@@ -192,7 +198,7 @@ export function HomeScreen() {
               type="checkbox"
               checked={wreckerEnabled}
               onChange={(e) => setWreckerEnabled(e.target.checked)}
-              style={{ accentColor: '#d29922' }}
+              style={{ accentColor: 'var(--amber)' }}
               disabled={submitting}
             />
             <span>Wrecker</span>
@@ -217,7 +223,8 @@ export function HomeScreen() {
         {error && <div style={styles.error}>{error}</div>}
 
         <button
-          style={{ ...styles.actionBtn, ...styles.createBtn, opacity: canCreate ? 1 : 0.55, marginTop: 24 }}
+          className="btn btn-primary"
+          style={{ opacity: canCreate ? 1 : 0.55, marginTop: 24, width: '100%' }}
           disabled={!canCreate}
           onClick={handleCreate}
         >
@@ -232,43 +239,47 @@ const styles: Record<string, React.CSSProperties> = {
   overlay: {
     position: 'fixed',
     inset: 0,
-    background: '#0d1117',
+    background: 'var(--bg)',
     display: 'flex',
-    alignItems: 'center',
+    alignItems: 'flex-start',
     justifyContent: 'center',
     zIndex: 50,
-    padding: 24,
+    padding: '40px 20px',
     overflowY: 'auto',
   },
   card: {
-    background: '#161b22',
-    border: '1px solid #30363d',
-    borderRadius: 12,
-    padding: '32px 36px',
+    background: 'var(--panel)',
+    border: '1px solid var(--border)',
+    padding: '28px 32px',
     width: '100%',
-    maxWidth: 560,
+    maxWidth: 520,
     display: 'flex',
     flexDirection: 'column',
     gap: 0,
+    flexShrink: 0,
+    position: 'relative',
   },
   logoRow: {
+    display: 'flex',
+    alignItems: 'center',
+    gap: 12,
     marginBottom: 4,
   },
   logo: {
     fontWeight: 700,
     fontSize: 20,
-    color: '#58a6ff',
-    letterSpacing: '-0.5px',
+    color: 'var(--ap-orange)',
+    letterSpacing: '0.20em',
   },
   tagline: {
-    color: '#8b949e',
+    color: 'var(--text-3)',
     fontSize: 13,
     marginBottom: 28,
   },
   sectionTitle: {
     fontWeight: 600,
     fontSize: 13,
-    color: '#e6edf3',
+    color: 'var(--text)',
     marginBottom: 8,
   },
   openRow: {
@@ -285,27 +296,26 @@ const styles: Record<string, React.CSSProperties> = {
   dividerLine: {
     flex: 1,
     height: 1,
-    background: '#30363d',
+    background: 'var(--border)',
   },
   dividerText: {
     fontSize: 12,
-    color: '#8b949e',
+    color: 'var(--text-3)',
     whiteSpace: 'nowrap',
   },
   label: {
     display: 'block',
     fontSize: 13,
     fontWeight: 600,
-    color: '#e6edf3',
+    color: 'var(--text)',
     marginTop: 20,
     marginBottom: 6,
   },
   input: {
     width: '100%',
-    background: '#0d1117',
-    border: '1px solid #30363d',
-    borderRadius: 6,
-    color: '#e6edf3',
+    background: 'var(--surface2)',
+    border: '1px solid var(--border)',
+    color: 'var(--text)',
     fontSize: 14,
     padding: '8px 12px',
     outline: 'none',
@@ -313,10 +323,9 @@ const styles: Record<string, React.CSSProperties> = {
   },
   textarea: {
     width: '100%',
-    background: '#0d1117',
-    border: '1px solid #30363d',
-    borderRadius: 6,
-    color: '#e6edf3',
+    background: 'var(--surface2)',
+    border: '1px solid var(--border)',
+    color: 'var(--text)',
     fontSize: 14,
     padding: '10px 12px',
     resize: 'vertical',
@@ -326,10 +335,9 @@ const styles: Record<string, React.CSSProperties> = {
     boxSizing: 'border-box',
   },
   select: {
-    background: '#0d1117',
-    border: '1px solid #30363d',
-    borderRadius: 6,
-    color: '#e6edf3',
+    background: 'var(--surface2)',
+    border: '1px solid var(--border)',
+    color: 'var(--text)',
     fontSize: 14,
     padding: '8px 12px',
     outline: 'none',
@@ -348,27 +356,25 @@ const styles: Record<string, React.CSSProperties> = {
     gap: 8,
     cursor: 'pointer',
     fontSize: 14,
-    color: '#e6edf3',
+    color: 'var(--text)',
   },
   toggleHint: {
     fontSize: 12,
-    color: '#8b949e',
+    color: 'var(--text-3)',
   },
   optional: {
     fontWeight: 400,
-    color: '#8b949e',
+    color: 'var(--text-3)',
   },
   error: {
-    background: '#3b1219',
-    border: '1px solid #f85149',
-    color: '#f85149',
-    borderRadius: 6,
+    background: 'var(--red-lo)',
+    border: '1px solid var(--red-border)',
+    color: 'var(--red)',
     padding: '8px 12px',
     fontSize: 13,
     marginTop: 12,
   },
   actionBtn: {
-    borderRadius: 8,
     padding: '9px 20px',
     fontSize: 14,
     fontWeight: 700,
@@ -377,15 +383,15 @@ const styles: Record<string, React.CSSProperties> = {
     transition: 'opacity 0.15s',
   },
   openBtn: {
-    background: '#1c2d3e',
-    border: '1px solid #388bfd',
-    color: '#58a6ff',
+    background: 'var(--ap-blue-lo)',
+    border: '1px solid var(--ap-blue-border)',
+    color: 'var(--ap-blue)',
     whiteSpace: 'nowrap',
   },
   createBtn: {
-    background: '#1a2e1a',
-    border: '1px solid #3fb950',
-    color: '#3fb950',
+    background: 'var(--green-lo)',
+    border: '1px solid var(--green-border)',
+    color: 'var(--green)',
     width: '100%',
   },
 };
