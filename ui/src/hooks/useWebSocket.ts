@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState, useCallback } from 'react';
 import type { WsEvent, SessionState } from '../types';
 
-export type ConnectionStatus = 'connecting' | 'connected' | 'disconnected' | 'failed';
+export type ConnectionStatus = 'connecting' | 'connected' | 'reconnected' | 'disconnected' | 'failed';
 
 interface UseWebSocketReturn {
   connectionStatus: ConnectionStatus;
@@ -19,6 +19,8 @@ export function useWebSocket(): UseWebSocketReturn {
   const wsRef = useRef<WebSocket | null>(null);
   const reconnectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const unmountedRef = useRef(false);
+  const reconnectedTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const hadConnectionRef = useRef(false);
   const failCountRef = useRef(0);
 
   const connect = useCallback(() => {
@@ -31,8 +33,17 @@ export function useWebSocket(): UseWebSocketReturn {
 
     ws.onopen = () => {
       if (unmountedRef.current) { ws.close(); return; }
+      const wasDisconnected = hadConnectionRef.current;
       failCountRef.current = 0;
-      setConnectionStatus('connected');
+      hadConnectionRef.current = true;
+      if (wasDisconnected) {
+        setConnectionStatus('reconnected');
+        reconnectedTimerRef.current = setTimeout(() => {
+          if (!unmountedRef.current) setConnectionStatus('connected');
+        }, 3000);
+      } else {
+        setConnectionStatus('connected');
+      }
     };
 
     ws.onmessage = (event: MessageEvent) => {
@@ -137,6 +148,7 @@ export function useWebSocket(): UseWebSocketReturn {
     return () => {
       unmountedRef.current = true;
       if (reconnectTimerRef.current) clearTimeout(reconnectTimerRef.current);
+      if (reconnectedTimerRef.current) clearTimeout(reconnectedTimerRef.current);
       wsRef.current?.close();
     };
   }, [connect]);

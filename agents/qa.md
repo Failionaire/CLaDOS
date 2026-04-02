@@ -19,7 +19,7 @@ Write a complete test suite that validates the PRD's acceptance criteria through
 
 ### If `{{project_type}}` is `backend-only`, `cli-tool`, or `library`:
 
-Write Supertest integration tests in `tests/integration/`. These are HTTP-level tests against the running server.
+Write integration tests in `tests/integration/` using the appropriate test framework for `{{language}}` (e.g., Supertest for TypeScript/Node, httpx/requests for Python, net/http/httptest for Go). These are HTTP-level tests against the running server.
 
 Test structure:
 ```typescript

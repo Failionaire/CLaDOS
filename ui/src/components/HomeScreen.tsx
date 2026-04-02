@@ -30,7 +30,10 @@ export function HomeScreen() {
   const [projectType, setProjectType] = useState<ProjectType>('backend-only');
   const [securityEnabled, setSecurityEnabled] = useState(false);
   const [wreckerEnabled, setWreckerEnabled] = useState(false);
+  const [guidedMode, setGuidedMode] = useState(true);
+  const [refinerEnabled, setRefinerEnabled] = useState(false);
   const [spendCap, setSpendCap] = useState('');
+  const [templates, setTemplates] = useState<{ name: string; description: string; config: Record<string, unknown>; stack_preset?: Record<string, string> }[]>([]);
 
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -42,6 +45,10 @@ export function HomeScreen() {
         setProjects(data);
         if (data.length > 0) setSelectedProject(data[0].name);
       })
+      .catch(() => {});
+    fetch('/templates/list')
+      .then(r => r.json())
+      .then(data => { if (Array.isArray(data)) setTemplates(data); })
       .catch(() => {});
   }, []);
 
@@ -82,6 +89,8 @@ export function HomeScreen() {
           security_enabled: securityEnabled,
           wrecker_enabled: wreckerEnabled,
           spend_cap: spendCap ? parseFloat(spendCap) : null,
+          autonomy_mode: guidedMode ? 'guided' : 'autonomous',
+          refiner_enabled: refinerEnabled,
         }),
       });
       if (!resp.ok) {
@@ -146,6 +155,29 @@ export function HomeScreen() {
         )}
 
         {/* ── New project form ────────────────────────────────────────── */}
+        {templates.length > 0 && (
+          <>
+            <label style={styles.label}>Template</label>
+            <select
+              style={styles.select}
+              onChange={(e) => {
+                const tpl = templates.find(t => t.name === e.target.value);
+                if (tpl) {
+                  if (tpl.config.project_type) setProjectType(tpl.config.project_type as ProjectType);
+                  if (tpl.config.security_enabled != null) setSecurityEnabled(!!tpl.config.security_enabled);
+                  if (tpl.config.wrecker_enabled != null) setWreckerEnabled(!!tpl.config.wrecker_enabled);
+                }
+              }}
+              disabled={submitting}
+            >
+              <option value="">— No template —</option>
+              {templates.map(t => (
+                <option key={t.name} value={t.name}>{t.name} — {t.description}</option>
+              ))}
+            </select>
+          </>
+        )}
+
         <label style={styles.label}>Project name</label>
         <input
           style={styles.input}
@@ -203,6 +235,28 @@ export function HomeScreen() {
             />
             <span>Wrecker</span>
             <span style={styles.toggleHint}>Adversarial edge-case tests</span>
+          </label>
+          <label style={styles.toggleLabel}>
+            <input
+              type="checkbox"
+              checked={guidedMode}
+              onChange={(e) => setGuidedMode(e.target.checked)}
+              style={{ accentColor: 'var(--ap-blue)' }}
+              disabled={submitting}
+            />
+            <span>Guided mode</span>
+            <span style={styles.toggleHint}>Agents ask clarifying questions before proceeding</span>
+          </label>
+          <label style={styles.toggleLabel}>
+            <input
+              type="checkbox"
+              checked={refinerEnabled}
+              onChange={(e) => setRefinerEnabled(e.target.checked)}
+              style={{ accentColor: 'var(--green)' }}
+              disabled={submitting}
+            />
+            <span>Refiner</span>
+            <span style={styles.toggleHint}>Auto-fix should_fix and suggestion findings</span>
           </label>
         </div>
 

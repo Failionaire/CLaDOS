@@ -1,0 +1,75 @@
+{
+  "version": 1,
+  "nodes": [
+    {
+      "id": "phase-0-concept",
+      "type": "phase",
+      "phase": 0,
+      "label": "Concept",
+      "agents": [
+        { "role": "pm", "task": "write_discovery", "skip_when": "idea_word_count >= 200" },
+        { "gate": "discovery" },
+        { "role": "pm", "task": "write_concept" },
+        { "role": "validator" }
+      ],
+      "gate": { "type": "standard", "artifacts": ["00-concept.md", "00-validator.json"] },
+      "next": "phase-1-architecture"
+    },
+    {
+      "id": "phase-1-architecture",
+      "type": "phase",
+      "phase": 1,
+      "label": "Architecture",
+      "agents": [
+        { "role": "architect" },
+        { "role": "pm", "task": "write_prd" },
+        { "role": "validator" }
+      ],
+      "gate": { "type": "standard", "artifacts": ["01-architecture.md", "01-api-spec.yaml", "01-prd.md", "01-schema.yaml", "01-stack.json", "01-validator.json"] },
+      "next": "phase-2-build"
+    },
+    {
+      "id": "phase-2-build",
+      "type": "phase",
+      "phase": 2,
+      "label": "Build",
+      "agents": [
+        { "role": "engineer", "task": "build_backend" },
+        { "role": "engineer", "task": "build_frontend", "skip_when": "config.project_type != full-stack" },
+        { "role": "qa" },
+        { "role": "security", "skip_when": "config.security_enabled != true" },
+        { "role": "wrecker", "skip_when": "config.wrecker_enabled != true" },
+        { "role": "validator" },
+        { "role": "refiner", "skip_when": "config.refiner_enabled != true" }
+      ],
+      "gate": { "type": "standard", "artifacts": ["02-build/backend-engineer-manifest.json", "02-build/contract-validator.json", "02-build/test-runner.json", "02-build/validator.json"] },
+      "next": "phase-3-document"
+    },
+    {
+      "id": "phase-3-document",
+      "type": "phase",
+      "phase": 3,
+      "label": "Document",
+      "agents": [
+        { "role": "docs" },
+        { "role": "pm", "task": "finalize_prd" },
+        { "role": "validator" }
+      ],
+      "gate": { "type": "standard", "artifacts": ["03-docs/README.md", "03-prd.md", "03-validator.json"] },
+      "next": "phase-4-infra"
+    },
+    {
+      "id": "phase-4-infra",
+      "type": "phase",
+      "phase": 4,
+      "label": "Infrastructure",
+      "agents": [
+        { "role": "devops" },
+        { "role": "security", "skip_when": "config.security_enabled != true" },
+        { "role": "validator" }
+      ],
+      "gate": { "type": "standard", "artifacts": ["04-infra/Dockerfile", "04-infra/docker-compose.yml", "04-validator.json"] },
+      "next": null
+    }
+  ]
+}

@@ -53,6 +53,15 @@ Preserve the original `id` for all carried-forward findings. Do not renumber.
 
 **Phase 2 (build review):** You will receive contract validator findings and test runner results. Convert all contract validator failures and test failures into `must_fix` findings. If `02-build/wrecker.json` is present, incorporate its failures: failed adversarial tests targeting authorization bypass or boundary conditions are `must_fix`; failed tests targeting edge cases are at minimum `should_fix`. For code quality, focus on security (missing auth, secrets in code, SQL injection possibilities) and correctness (broken logic, missing error handling for expected failure paths).
 
+> **Contract validator known limitations (V1/V2):**
+> The automated contract validator only parses Express-style route registrations and supports one level of `app.use(prefix, router)` nesting. It will produce **false positives or miss routes** in these cases:
+> - Nested routers beyond one level (e.g., `router.use('/sub', subRouter)`)
+> - Dynamic route loading via `require(glob)` patterns or route factories
+> - Middleware-based routing where paths are constructed at runtime
+> - Non-Express frameworks (Fastify, Koa, Hapi, etc.)
+>
+> When you encounter contract validator findings that appear to be false positives due to these limitations, note the limitation in the finding description and downgrade severity to `suggestion`. Do not suppress them entirely — the human reviewer should still see them.
+
 **Phase 3 (documentation review):** Check that the README accurately describes how to run the project. Check that `03-api-spec.yaml` matches what was actually built (read `src/` to verify). Flag outdated instructions or missing steps.
 
 **Phase 4 (deployment review):** Check for hardcoded secrets in Dockerfiles or CI config. Check that environment variable documentation is complete. Check that the health check endpoint exists and is configured in the deployment spec.

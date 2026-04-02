@@ -26,7 +26,7 @@ For each issue found, report the specific file and line number.
 
 ### 2. Dependency audit
 
-Read `package.json` from the project root. For each production dependency:
+Read the project's dependency manifest (`package.json`, `requirements.txt`, `go.mod`, etc.) from the project root. For each production dependency:
 - Note any packages with known critical CVEs if you are aware of them
 - Flag any packages that perform unusual operations (arbitrary code execution, network requests on install) if their use in this project seems out of place
 

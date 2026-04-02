@@ -10,6 +10,16 @@
  * express-openapi-validator middleware and exercised by the test suite.
  *
  * Scope: top-level app calls + one level of app.use("/prefix", router) composition.
+ *
+ * Known limitations (V1/V2):
+ *   - Only one level of router nesting (app.use → router.METHOD).
+ *     Nested `router.use(subRouter)` chains are NOT followed.
+ *   - Dynamic route loading via `require(glob)`, route factories, or
+ *     runtime path construction is not detected.
+ *   - Only Express-style APIs are supported. Fastify, Koa, Hapi, etc.
+ *     will produce no registered routes and thus all-false-positive findings.
+ *   - Lines containing `// @clados-ignore` are skipped during route extraction,
+ *     allowing users to suppress known false positives.
  */
 
 import fs from 'fs';
@@ -119,6 +129,14 @@ function extractRoutesFromFile(
   scanNode(sourceFile);
 
   function scanNode(node: ts.Node): void {
+    // Skip lines marked with @clados-ignore
+    const { line: nodeLine } = sourceFile.getLineAndCharacterOfPosition(node.getStart());
+    const lineEnd = sourceFile.getLineAndCharacterOfPosition(node.getEnd()).line;
+    const lineText = source.split('\n').slice(nodeLine, lineEnd + 1).join(' ');
+    if (lineText.includes('@clados-ignore')) {
+      return;
+    }
+
     if (ts.isCallExpression(node)) {
       const expr = node.expression;
 

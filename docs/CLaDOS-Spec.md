@@ -10,41 +10,19 @@ Inspired by [azure-agentic-infraops](https://github.com/jonathan-vella/azure-age
 
 Most "AI coding" tools generate code and hope for the best. CLaDOS works the way a real modern engineering team does, avoiding the heavy Waterfall trap by prioritizing agile prototyping, rapid iteration, and pragmatic code-as-truth workflows:
 
-- A **Conductor** (Claude Opus) manages the whole process and never writes code itself
+- A **Conductor** (Claude Sonnet) manages the whole process and never writes code itself
 - A **Validator** agent acts as an objective linter — using static execution paths, exact test fixtures, and security checklists to find concrete issues rather than hallucinating subjective architectural pedantry
 - Every phase ends with a **human approval gate** — you review the output and the Validator's findings, deciding whether to proceed, revise, or explicitly override warnings (preventing LLM death-spirals)
 - Phase handoffs are file-based, and cross-file code context is shared via rigorous **AST/LSP programmatic extraction** (interfaces, exports) rather than lossy LLM text summaries
-- **[Future]** An Interactive Mode lets users iterate and fix code interactively with the AI in the context of the generated workspace — a separate product surface that ships after the core pipeline is proven
+- An **Interactive Mode** lets users iterate on the completed project — chat directly with the codebase using full AST context, with every write requiring explicit diff approval
 
 The ultimate proof of success would be if this could be used to make itself.
 
 ---
 
-## Scope: v1 core vs. future
+## Implementation Status
 
-This document describes the full vision for CLaDOS. Not all of it ships in v1. The following framework separates what must work first from what gets added later.
-
-**V1 Core — must prove itself on real projects before anything else ships:**
-- Conductor driving agents in a hardcoded phase sequence (no configurable DAG)
-- PM → Architect → Engineer → Validator → human gate, with revision loops
-- File-based artifacts with atomic session state and crash recovery
-- Targeted fix loops on Validator findings (not full re-runs)
-- Mechanical validation (contract checks, test execution) separated from LLM review
-- Budget gating before dispatch (not mid-stream)
-- Findings-based validation (must_fix / should_fix / suggestion) — no numeric scores
-- One stack: TypeScript end-to-end
-
-**Future expansion — ships only after the core loop is proven:**
-- Configurable workflow DAG with condition DSL
-- Custom agent framework (`clados agent add`)
-- Interactive Mode (post-deployment chat with AST-aware context)
-- IDE bridge (bi-directional file sync, deep-link URIs)
-- Artifact version pinning UI (version dropdown + "Use this version")
-- CLI subcommands (`clados logs`, `clados model-update`)
-- Refiner agent (optional polish pass)
-- Multi-language / multi-stack support
-
-Features marked **[Future]** throughout this document are part of the long-term vision but explicitly out of scope for v1.
+Everything described in this document is implemented as of `1.0.0-alpha.6`. The staged V1–V4 spec files that previously tracked incremental scope have been merged here and deleted. See the [Changelog](../Changelog.md) for the full release history.
 
 ---
 
@@ -66,7 +44,7 @@ Each phase column contains cards for every agent and artifact within that phase.
 
 Each agent role has a fixed icon (small inline SVG): PM = document, Architect = blueprint grid, Engineer = `</>`, Security = shield, QA = checkbox, DevOps = gear, Validator = crosshairs, Docs = book. Icons anchor identity to the card; they do not animate between phases.
 
-Gate cards show the artifact and revision notes side by side in a **floating modal window** (fixed position, dims the board behind it; minimize to a topbar pill). The gate header shows a **revision counter** — *"Revision 2 of 3 before Opus escalation"* — that turns amber at revision 2 and red at revision 3+; a tooltip on the counter explains the escalation mechanic for new users. The header also shows a **pre-phase cost estimate** for the next phase: *"Next phase: ~$0.45"*, computed from stored artifact token counts and known model pricing before the gate opens.
+Gate cards show the artifact and revision notes side by side in a **floating modal window** (fixed position, dims the board behind it; minimize to a topbar pill). The gate header shows a **revision counter** — *"Revision 2 of 3 before Sonnet escalation"* — that turns amber at revision 2 and red at revision 3+; a tooltip on the counter explains the escalation mechanic for new users. The header also shows a **pre-phase cost estimate** for the next phase: *"Next phase: ~$0.45"*, computed from stored artifact token counts and known model pricing before the gate opens.
 
 The gate layout is **adaptive**: when the Validator produces findings, a third pane appears on the right; when there are no findings, the column is omitted and the document and notes panes split the space. The findings pane header shows a must-fix count badge when relevant.
 
@@ -91,21 +69,21 @@ The UI connects to the orchestrator over WebSocket for live streaming updates �
 **Models:**
 | Role | Nickname | Default | Escalates to |
 |------|----------|---------|--------------|
-| Conductor | **GLaDOS** | Claude Opus | N/A — always Opus |
-| PM | **Project Manager Core** | Claude Sonnet | Claude Opus |
-| Architect | **Architect Core** | Claude Sonnet | Claude Opus |
-| Engineer | — | Claude Sonnet | Claude Opus |
-| QA | **QA Core** | Claude Sonnet | Claude Opus (Restricted: Asymmetric Context Only) |
-| Validator | **Validator Core** | Claude Sonnet | Claude Opus |
-| Wrecker *(optional)* | **Wrecker Core** | Claude Sonnet | Claude Opus |
-| Refiner *(optional)* **[Future]** | **Refiner Core** | Claude Sonnet | Claude Opus |
-| Security *(optional)* | **Security Core** | Claude Sonnet | Claude Opus |
-| DevOps | **DevOps Core** | Claude Sonnet | Claude Opus |
-| Docs | **Docs Core** | Claude Sonnet | Claude Opus |
+| Conductor | **GLaDOS** | Claude Sonnet | N/A — reasoning escape hatch uses Sonnet |
+| PM | **Project Manager Core** | Claude Haiku | Claude Sonnet |
+| Architect | **Architect Core** | Claude Haiku | Claude Sonnet |
+| Engineer | — | Claude Haiku | Claude Sonnet |
+| QA | **QA Core** | Claude Haiku | Claude Sonnet |
+| Validator | **Validator Core** | Claude Haiku | Claude Sonnet |
+| Wrecker *(optional)* | **Wrecker Core** | Claude Haiku | Claude Sonnet |
+| Refiner *(optional)* | **Refiner Core** | Claude Sonnet | Claude Sonnet |
+| Security *(optional)* | **Security Core** | Claude Haiku | Claude Sonnet |
+| DevOps | **DevOps Core** | Claude Haiku | Claude Sonnet |
+| Docs | **Docs Core** | Claude Haiku | Claude Sonnet |
 
 Nicknames are display-only — the role name is the canonical identifier in all logs, file names, and API calls. The persona voice of each Core is confined to the Identity section of its system prompt and to the phrasing of questions it emits — it must not appear in the artifact content itself, which must be written in plain professional language appropriate to its type. The PRD reads like a PRD; the Validator's findings read like findings. The Conductor retains GLaDOS as its identity.
 
-Escalation to Opus happens automatically when:
+Escalation to Sonnet happens automatically when:
 1. A phase has been revised 3+ times without resolving
 2. The project is flagged as high-complexity at the start
 
@@ -120,19 +98,22 @@ Before any agent runs, CLaDOS shows a setup screen with these inputs:
 
 1. **Describe your idea** — free text, any length
 2. **Project type**
-3. **Agent loadout** — toggleable optional review agents for Phase 2:
+3. **Agent loadout** — toggleable optional review agents:
    - Security (Security Core)
    - Wrecker (Adversarial edge-case tester)
-   - **[Future]** Refiner (Polish pass)
+   - Refiner (optional polish pass — auto-fixes should_fix/suggestion findings before Gate 3)
 4. **Spend cap** — optional maximum API budget.
+5. **Guided / Autonomous mode** — in Guided mode, agents can ask clarifying questions before generating artifacts; in Autonomous mode, they log their default answers and proceed.
 
-The PM agent sharpens the idea into a rapid one-page concept. The Validator reviews it purely for feasibility and obvious blank spots. 
+If the idea description is under 200 words, the PM first writes a **discovery document** — its understanding of the idea, clarifying questions, and default assumptions for each. A lightweight Discovery Gate opens for user answers. If the idea is 200+ words, the discovery pass is skipped.
+
+The PM then writes the concept doc. The Validator reviews it for feasibility.
 **Gate 1: You approve the prototype scope.**
 
 ---
 
 ### Phase 1 — Architecture
-The Architect defines the project skeleton, tech stack, and a lightweight schema. A Prototype Engineer scaffolds the basic database models and core server skeleton, plus generates `infra/docker-compose.test.yml` and `.env.test` for the test environment. The Validator checks the scaffolding against the schema layout programmatically.
+The PM expands the approved concept into a full PRD with user stories, acceptance criteria, and non-functional requirements. The Architect then defines the project skeleton, tech stack, database schema, and OpenAPI spec. A Prototype Engineer scaffolds the basic database models and core server skeleton, plus generates `infra/docker-compose.test.yml` and `.env.test` for the test environment. The Validator checks all artifacts programmatically.
 **Gate 2: You approve the architecture prototype.**
 
 ---
@@ -154,19 +135,19 @@ The Test-Runner sets up the test environment (installs dependencies, starts data
 ---
 
 ### Phase 3 — Document
-Once the build executes properly, the Docs and PM agents write the official README, final PRD (`03-prd.md`), and canonical API spec (`03-api-spec.yaml`) *based on the actual functioning codebase*. The Phase 1 `01-api-spec.yaml` is preserved as the original design artifact; `03-api-spec.yaml` is the record of what was actually built and the binding contract for any future re-invocation.
+Once the build executes properly, the Docs agent writes the official README, changelog, and runbook *based on the actual functioning codebase*, and produces an intermediate `03-api-spec-draft.yaml`. The PM then writes the final PRD (`03-prd.md`) and produces the canonical `03-api-spec.yaml` from the draft, verifying against source routes as needed. The Phase 1 `01-api-spec.yaml` is preserved as the original design artifact; `03-api-spec.yaml` is the record of what was actually built and the binding contract for any future re-invocation.
 **Gate 4: You approve the documentation.**
 
 ---
 
-### Phase 4 — Ship
-The DevOps agent handles Dockerfiles, CI/CD, and deployment configs. 
+### Phase 4 — Infrastructure
+The DevOps agent handles Dockerfiles, CI/CD, and deployment configs. If the Security agent is enabled it runs a final review of the deployment configuration. The Validator then reviews all infra artifacts.
 **Gate 5: You approve the deployment.**
 
 ---
 
-### [Future] Interactive Mode
-Once a project is shipped, CLaDOS converts the UI to an interactive mode where you can highlight generated code and chat with the AI (e.g., "This route throws a 500 when I pass X, fix the DB query") with full AST context of the workspace. This is a separate product surface and ships after the core pipeline is proven.
+### Interactive Mode
+Once a project reaches `complete` status, an **Interactive Chat** panel appears in the UI. Chat directly with the codebase — ask questions, request targeted fixes, reference specific Validator findings. The interactive agent has full AST-aware workspace context. It uses a `propose_diff` tool for all writes — you see and approve the diff before any file changes.
 
 ## Error handling and resilience
 
@@ -209,7 +190,7 @@ When CLaDOS finishes a phase, the output lands in folders on your machine. Here 
 
 **Ongoing:**
 - The Validator can be run standalone at any time on any artifact if you want a fresh adversarial review
-- Re-invoking CLaDOS on an existing project to add features, fix bugs, or refactor is an intentional future capability. The artifact structure is designed to support it — session state is recoverable, artifacts are versioned, and the DAG is re-enterable at any gate — but the re-invocation workflow itself is out of scope for v1. If you need to modify a generated project, do so directly in `src/` and treat the CLaDOS artifacts as the original specification.
+- To add a feature, fix a bug, or refactor a completed project, run `clados continue <project> "description of change"`. CLaDOS classifies the change to the correct entry phase (0–4) using a Haiku LLM call, presents a **Re-invocation Gate** for you to confirm or override the entry phase, then re-enters the pipeline from that point with prior artifacts carrying forward as context.
 
 ---
 
@@ -218,18 +199,16 @@ When CLaDOS finishes a phase, the output lands in folders on your machine. Here 
 ```
 clados/                            ← CLaDOS installation (never modified by runs)
   orchestrator/                    ← TypeScript — the brain
-    conductor.ts                   ← drives phases (hardcoded sequence in v1; [Future] reads workflow-graph.json)
+    conductor.ts                   ← drives phases; reads workflow-graph.default.json for phase sequence
     escalation.ts                  ← Sonnet → Opus escalation rules
     session.ts                     ← atomic session state writes via write-file-atomic
     parallel.ts                    ← shared semaphore for concurrent API calls; runs engineers
-    workflow-graph.json            ← [Future] DAG: phases, edges, conditions (schema defined below)
+    workflow-graph.default.json    ← DAG: phases, edges, conditions (schema defined below)
     agent-registry.json            ← role → {system prompt file, model, tools, enabled_when,
                                       context_artifacts, system_prompt_tokens,
-                                      expected_output_tokens, test_timeout_seconds,
-                                      max_concurrent_api_calls}
+                                      expected_output_tokens_per_turn, expected_tool_turns}
 
   agents/                          ← Markdown system prompts (required structure defined below)
-    conductor.md
     validator.md
     pm.md
     architect.md
@@ -237,13 +216,12 @@ clados/                            ← CLaDOS installation (never modified by ru
     qa.md
     security.md                    ← optional
     wrecker.md                     ← optional
-    refiner.md                     ← [Future] optional
+    refiner.md                     ← optional
     devops.md
     docs.md
-    custom/                        ← [Future] user-defined agent prompts
+    interactive.md                 ← interactive mode agent; tools: read_file, write_file (via propose_diff), list_files
+    custom/                        ← user-defined agent prompts
     _subagents/
-      validator-review.md         ← single-lens adversarial review
-      schema-designer.md
       contract-validator.ts        ← static analysis; reads OpenAPI spec + source, not an LLM prompt
       test-runner.ts               ← sandboxed test execution; reads prerequisites from QA output
       summarizer.md                ← Haiku-tier; writes {phase}-summary.md concurrently
@@ -252,19 +230,19 @@ clados/                            ← CLaDOS installation (never modified by ru
     components/
       Gate.tsx                     ← approval gate with three-pane revision view
       KanbanBoard.tsx              ← one column per phase, live card states
-      ArtifactViewer.tsx           ← renders .md / .yaml / .json artifacts; [Future] version dropdown + pin
+      ArtifactViewer.tsx          ← renders .md / .yaml / .json artifacts
+      VersionDropdown.tsx          ← version history dropdown on artifact links; "Use this version" rollback
       ValidatorFindings.tsx       ← findings table sorted by severity
-      DecisionsPanel.tsx           ← [Future] read-only chronological log of conductor_decisions
+      DecisionsPanel.tsx           ← read-only chronological log of conductor_decisions
     App.tsx
 
 {your-project}/                    ← created in cwd when you run `clados new {name}`
   .clados/
     00-session-state.json          ← machine state: current phase, project_type, autonomy_mode,
-                                      test_mode, pipeline_status, resolved_models,
-                                      conductor_decisions, conductor_reasoning, validator_tier,
-                                      phase_checkpoint, token_budget, max_budget, spec_version,
-                                      agent_tool_calls, pipeline_cost_estimate,
-                                      dependency_divergences
+                                      pipeline_status, conductor_decisions, conductor_reasoning,
+                                      validator_tier, phase_checkpoint, spec_version,
+                                      agent_tokens_used, total_cost_usd, context_compression_log,
+                                      dependency_divergences, artifacts
     run.log                        ← structured JSONL operational log (rotates at 10MB)
     00-concept.md                  ← Phase 0 output; symlink to current version
     00-concept_v1.md               ← versioned artifact; revisions produce _v2.md, _v3.md, etc.
@@ -274,6 +252,7 @@ clados/                            ← CLaDOS installation (never modified by ru
     01-architecture.md
     01-api-spec.yaml
     01-schema.yaml
+    01-stack.json                  ← stack manifest (language, framework, ORM, etc.) from Phase 1
     01-validator.json
     02-build/                      ← Phase 2 build artifacts, named by agent slug
       backend-engineer-manifest.json
@@ -284,6 +263,7 @@ clados/                            ← CLaDOS installation (never modified by ru
       validator.json
       wrecker.json                      ← if enabled
       security-report.md                ← if enabled
+    03-api-spec-draft.yaml         ← intermediate draft produced by Docs agent in Phase 3
     03-prd.md                      ← final PRD based on actual build
     03-api-spec.yaml               ← canonical API spec as actually built
     history/                       ← all superseded artifact versions archived here
@@ -305,7 +285,7 @@ clados/                            ← CLaDOS installation (never modified by ru
 
 **Human Override is King.** To prevent death spirals where the Validator hallucinates overly pedantic requirements, users can override any `must_fix` finding at the gate. The human's decision is final — the pipeline cannot force a block that the user has explicitly overridden.
 
-**[v1] The workflow is a hardcoded phase sequence.** In v1, the Conductor drives a fixed sequence: Concept → Architecture → Build → Document → Ship. Phase transitions, agent ordering within phases, and gate placement are expressed directly in TypeScript — simple and debuggable. **[Future]** This evolves into a configurable DAG where `workflow-graph.json` defines phases as nodes and transitions as edges with conditions. The schema is:
+**The workflow is a configurable DAG.** The Conductor reads `workflow-graph.default.json` (or a user-supplied `workflow-graph.json` in the project root) which defines phases as nodes and transitions as edges with conditions. Phase transitions, agent ordering within phases, and gate placement are all in the graph — not hardcoded in the Conductor. The default graph encodes the standard 5-phase sequence and is functionally identical to the old hardcoded conductor. Changing the graph means editing JSON, not TypeScript.
 
 ```typescript
 // Conditions use a minimal string DSL: "field operator value"
@@ -357,11 +337,11 @@ Condition evaluation uses a trivial string parser — no arbitrary JavaScript, n
 
 **Gates block on a real async suspension point.** The orchestrator runs as a persistent Express server. When the Conductor reaches a gate node in the DAG, it pauses by awaiting a Promise. The UI resolves this Promise by POSTing to `/gate/respond` with the human's decision (`approve`, `revise`, `abort`, or `goto`). No polling, no file-based signaling.
 
-**[Future] IDE Bridge (Bi-directional File Sync):** File watchers on `.clados/wip/` and `/src/` that auto-refresh the Gate UI when users edit files externally, plus deep-link URIs (e.g. `vscode://file/{project}/src/utils.ts:44`) that open Validator findings directly in the user's IDE. Ships after the core pipeline is stable — adds file-watcher complexity, race conditions between AI writes and user edits, and platform-specific URI handling.
+**IDE Bridge (Bi-directional File Sync):** File watchers on `.clados/wip/` and `/src/` auto-refresh the Gate UI when users edit files externally, plus deep-link URIs (e.g. `vscode://file/{project}/src/utils.ts:44`) that open Validator findings directly in the user's IDE. The `editor_uri_scheme` config field (default: `vscode`) lets other editors use their own URI scheme.
 
 **The Conductor is TypeScript, not Claude.** The Conductor never calls the Claude API for its own reasoning — it is deterministic code that reads the DAG and drives execution. Claude is only invoked for specialist agents. Each invocation follows the standard agentic loop: the Conductor sends the agent's system prompt, prior artifacts as context, and a declared tool set to the API, then handles tool calls in a loop until the agent emits a final text artifact. Tools (`read_file`, `write_file`, `list_files`) are implemented as Node.js `fs` operations inside the orchestrator. Which tools each agent receives is declared in `agent-registry.json`.
 
-**The Conductor has a single reasoning escape hatch.** For genuinely ambiguous situations that deterministic code cannot resolve, the Conductor calls `conductor.reason(context, question)` to invoke Claude Opus for a single decision. The specific trigger is: 3 consecutive revision cycles where the same `must_fix` findings remain unresolved. After a reasoning-guided re-run that still fails, the loop does not repeat — the Conductor forces a gate with the message: *"Three revisions haven't resolved this. You need to decide how to proceed."* Every `conductor.reason()` call is logged to `00-session-state.json` under `conductor_reasoning` (context, question, and decision returned). This escape hatch should be rare; if it fires frequently, the underlying prompts or validation criteria need adjustment, not the orchestrator.
+**The Conductor has a single reasoning escape hatch.** For genuinely ambiguous situations that deterministic code cannot resolve, the Conductor calls `conductor.reason(context, question)` to invoke Claude Sonnet for a single decision. The specific trigger is: 3 consecutive revision cycles where the same `must_fix` findings remain unresolved. After a reasoning-guided re-run that still fails, the loop does not repeat — the Conductor forces a gate with the message: *"Three revisions haven't resolved this. You need to decide how to proceed."* Every `conductor.reason()` call is logged to `00-session-state.json` under `conductor_reasoning` (context, question, and decision returned). This escape hatch should be rare; if it fires frequently, the underlying prompts or validation criteria need adjustment, not the orchestrator.
 
 **Project type drives the DAG at runtime.** Phase 0 writes `project_type` into session state. Every agent entry in `agent-registry.json` can declare an `enabled_when` condition. Changing project type is handled by going back to Gate 0 — the confirmation message specifies which agents and artifacts are affected by the change. Mid-pipeline mutation of project type without going back to Gate 0 is not supported.
 
@@ -374,7 +354,7 @@ Condition evaluation uses a trivial string parser — no arbitrary JavaScript, n
 
 **Context budget is enforced automatically.** Token counts are stored in `00-session-state.json` at artifact write time, calculated once using `anthropic.beta.messages.countTokens()` from the official SDK — a lightweight counting call with no generation, producing exact counts against Anthropic's actual context limits. This call is wrapped with a graceful fallback: if it fails, the Conductor falls back to `Math.ceil(chars / 3.5)` and logs a warning; the pipeline degrades to approximate counting rather than breaking. At inject time, projection is pure arithmetic. If projected context would exceed 80K tokens, the Conductor applies a two-stage downgrade: `reference` artifacts are reduced to summaries first; if still over budget, `required` artifacts are downgraded with `read_file` access granted. Both decisions are logged.
 
-**Artifacts are versioned, never overwritten.** When a phase is revised, the previous artifact is renamed to `{name}_vN.md` and preserved in `.clados/history/`. Session state tracks the current version number per artifact. **[Future]** The UI's artifact links show a version dropdown with a "Use this version" action on any non-current entry — this version pinning UI ships after the core loop is stable.
+**Artifacts are versioned, never overwritten.** When a phase is revised, the previous artifact is renamed to `{name}_vN.md` and preserved in `.clados/history/`. Session state tracks the current version number per artifact. The UI's artifact links show a version dropdown with a "Use this version" action on any non-current entry — copying content to current, incrementing the version counter, and re-opening the gate for review.
 
 **Agents can surface ambiguity before they write.** Before generating its main artifact, an agent may emit a `{phase}-questions.json` — a structured list of ambiguities with a `default_if_auto` field for each. In Guided mode, a lightweight gate pauses for user answers. In Autonomous mode, the Conductor logs its own answers. Either way, every question and decision is preserved in `00-session-state.json` and visible in the Decisions panel.
 
@@ -403,12 +383,10 @@ required section list for prose artifacts.]
 
 If any mandatory section is missing, the Conductor logs a configuration error at startup and refuses to dispatch the agent.
 
-**[Future] Custom agents have two tiers.** `clados agent add` prompts for a mode:
+**Custom agents have two tiers.** `clados agent add` prompts for a mode:
 
-- `--mode reviewer` (default): scaffolds a minimal prompt that produces freeform text findings. An adapter in the Conductor converts these to the structured findings schema. Suitable for quick custom checks without learning the schema.
+- `--mode reviewer` (default): scaffolds a minimal prompt that produces freeform text findings. An adapter in the Conductor converts these to the structured findings schema. Suitable for quick domain-specific checks without learning the schema.
 - `--mode agent` (advanced): full scaffold with required sections, structured output, and fix loop support. Uses the same dispatch loop and toolset as built-in agents.
-
-Custom agents ship after the core agent set is proven. Zero users need extensibility before the built-in loop works reliably.
 
 **The pipeline has an explicit state machine.** `pipeline_status` in `00-session-state.json` is the canonical record of what the Conductor is doing. Valid values and their transitions:
 
@@ -425,7 +403,7 @@ The Conductor writes session state atomically on every transition. All writes go
 
 **Cost visibility is based on actual spend, not projections.** The topbar shows a running total of actual API spend, updated after each call completes. Hovering shows a per-phase breakdown. No upfront pipeline estimate is displayed — lower-bound projections anchor user expectations and erode trust when actual costs are materially higher due to revisions and escalations. Per-gate, a single-pass cost estimate for the *next phase only* is shown (*"Next phase: ~$0.45"*), clearly labeled as assuming zero revisions.
 
-**Pre-gate next-phase cost estimates include system prompt tokens.** The per-gate estimate (*"Next phase: ~$0.45"*) accounts for: system prompt tokens per agent (from `agent-registry.json`), projected input artifact tokens (from stored counts), and a fixed output estimate per agent role (declared in the registry as `expected_output_tokens`). It does not speculate on revision cycles — it represents a single-pass cost. System prompt tokens are calculated once at CLaDOS startup using `countTokens()` and stored in the registry entry; they are not recalculated per run.
+**Pre-gate next-phase cost estimates include system prompt tokens.** The per-gate estimate (*"Next phase: ~$0.45"*) accounts for: system prompt tokens per agent (from `agent-registry.json`), projected input artifact tokens (from stored counts), and a fixed output estimate per agent role (declared in the registry as `expected_output_tokens_per_turn` × `expected_tool_turns`). It does not speculate on revision cycles — it represents a single-pass cost. System prompt tokens are calculated once at CLaDOS startup using `countTokens()` and stored in the registry entry; they are not recalculated per run.
 
 **Budget is tracked per API call.** The Conductor accumulates token usage from each API response's `usage` field into `phase_checkpoint.agent_tokens_used`. Before dispatching the next API call (whether a new turn in an agentic loop or a new agent), it checks: would the projected cost exceed the remaining budget? If yes, it triggers the budget gate *before* the call — budget is never enforced mid-stream, which would produce corrupted artifacts.
 
@@ -455,31 +433,23 @@ If the structural marker test passes, the Conductor includes the partial content
 
 **Engineer manifests validate against the Architect's declared dependencies.** The Architect's `01-architecture.md` includes a declared dependency list (npm packages, external services, infrastructure). The Conductor reads this list after the Engineer produces its manifest and compares it to the packages declared in the manifest's `package.json` entry. Any package the Engineer introduces that wasn't declared in the architecture is added to `dependency_divergences` in session state and shown at Gate 3 as an informational item — not a blocking finding. The human can decide at the gate whether the divergence is acceptable.
 
-**[Future] `clados logs` provides filtered views of the operational log.** The command supports these flags: `--agent <name>` (filter by agent slug), `--phase <n>` (filter by phase number), `--event <type>` (filter by event type: `api_call`, `file_write`, `phase_transition`, `error`), `--since <duration>` (e.g. `30m`, `2h`, `1d`), and `--errors` (shorthand for `--event api_call` filtered to non-2xx status codes). Examples: `clados logs --phase 2 --agent backend-engineer` shows all API calls and file writes for the backend engineer in Phase 2; `clados logs --errors --since 1h` shows all failed API calls in the last hour. Output is formatted as human-readable table rows, not raw JSONL, unless `--raw` is passed. At `clados new` time, the Conductor resolves model aliases to current API strings and writes them to `00-session-state.json` under `resolved_models`:
+**`clados logs` provides filtered views of the operational log.** The command supports these flags: `--agent <name>` (filter by agent slug), `--phase <n>` (filter by phase number), `--event <pattern>` (substring match against the event field), `--since <ISO timestamp>` (only entries after this timestamp), and `--errors` (only entries with `level === 'error'`). Examples: `clados logs --phase 2 --agent backend-engineer` shows all log entries for the backend engineer in Phase 2; `clados logs --errors` shows all error-level entries. Output is formatted as human-readable table rows, not raw JSONL, unless `--raw` is passed.
 
-```json
-"resolved_models": {
-  "sonnet": "claude-sonnet-4-5-20251001",
-  "opus":   "claude-opus-4-5-20251001"
-}
-```
-
-All subsequent API calls use these pinned strings — never the aliases. A model release mid-project does not affect the current run. **[Future]** `clados model-update` re-resolves and overwrites `resolved_models`, but only takes effect at the next phase boundary, never mid-phase.
+Model strings are stored directly as full API identifiers in `agent-registry.json` (e.g. `"claude-haiku-4-5-20251001"`). A `_model_reference` section in the registry maps short aliases (`haiku`, `sonnet`, `opus`) to their current full strings. `clados model-update` reads this section and rewrites all agent entries to the latest strings — but only takes effect at the next CLaDOS startup, not mid-run.
 
 **The Engineer builds in two passes with a manifest as the continuity mechanism.** Code generation for real projects spans 20+ files that cannot fit in one context window. The Engineer's first pass produces a `{phase}-build/{engineer}-manifest.json` — a flat list of every file to create, with path, purpose, and intra-manifest dependencies. No code is written in pass 1. The Conductor validates manifest structure before dispatching pass 2. In pass 2, the Engineer works through the manifest in dependency order, writing files in batches of 3–5 per API call. Each batch receives the full manifest plus a summary list of already-written files as persistent context. The contract-validator and test-runner both receive the manifest so they can flag declared-but-missing files explicitly. If the process crashes mid-pass 2, `phase_checkpoint` records which manifest entries are complete; restart resumes from the next unwritten entry.
 
-**Parallel API calls are rate-limited by a shared semaphore.** `parallel.ts` maintains a process-wide semaphore (default: 3 max concurrent calls, configurable as `max_concurrent_api_calls` in `agent-registry.json`). Every agent acquires a slot before any API call — including retry attempts — and releases it on response. Two parallel engineers cannot simultaneously hit rate limits and simultaneously retry; they queue behind the semaphore. The limit applies across all agents in the process, so enabling more optional agents in Phase 3 automatically increases contention and slows throughput rather than burning through rate limits.
+**Parallel API calls are rate-limited by a shared semaphore.** `parallel.ts` maintains a process-wide semaphore (default: 3 max concurrent calls, hardcoded in the Conductor constructor). Every agent acquires a slot before any API call — including retry attempts — and releases it on response. Two parallel engineers cannot simultaneously hit rate limits and simultaneously retry; they queue behind the semaphore. The limit applies across all agents in the process, so enabling more optional agents in Phase 3 automatically increases contention and slows throughput rather than burning through rate limits. The registry also declares `rate_limit_tpm` (tokens per minute); the Conductor dynamically throttles the semaphore down to 1 slot if rolling TPM usage approaches 80% of this ceiling.
 
 **The orchestrator writes a structured operational log.** `.clados/run.log` is a JSONL file — one record per event — written by the Conductor throughout the run:
 
 ```json
-{"ts":"2025-01-15T14:23:01Z","event":"api_call","agent":"pm","model":"claude-sonnet-4-5-20251001","input_tokens":4821,"output_tokens":1203,"latency_ms":8341,"status":200}
-{"ts":"2025-01-15T14:23:10Z","event":"file_write","path":".clados/01-prd.md","bytes":4892,"op":"create"}
-{"ts":"2025-01-15T14:23:10Z","event":"phase_transition","from":"pm-agent","to":"validator-agent","phase":1}
-{"ts":"2025-01-15T14:31:44Z","event":"api_call","agent":"engineer","model":"claude-sonnet-4-5-20251001","input_tokens":18200,"output_tokens":3100,"latency_ms":22100,"status":429,"retry":1}
+{"timestamp":"2025-01-15T14:23:01.000Z","level":"info","phase":1,"agent":"pm","event":"api_call","message":"API call completed","data":{"model":"claude-haiku-4-5-20251001","input_tokens":4821,"output_tokens":1203,"latency_ms":8341}}
+{"timestamp":"2025-01-15T14:23:10.000Z","level":"info","phase":1,"agent":"pm","event":"file_write","message":"Artifact written","data":{"path":".clados/01-prd.md","bytes":4892}}
+{"timestamp":"2025-01-15T14:31:44.000Z","level":"error","phase":2,"agent":"engineer","event":"api_call","message":"Rate limit — retrying","data":{"retry":1}}
 ```
 
-Session state is application state; `run.log` is operational history. They are separate concerns. The log rotates at 10MB (rename to `run.log.1`, start fresh). **[Future]** `clados logs` will tail and filter the log without requiring the user to parse JSONL manually; until then, standard JSONL tools work. When a user reports "Phase 3 took 45 minutes and cost $15", `run.log` is what you read to reconstruct which API calls caused it.
+Session state is application state; `run.log` is operational history. They are separate concerns. The log rotates at 10MB (current log renamed to `run.{timestamp}.log`, fresh log started). `clados logs` filters and formats the log without requiring manual JSONL parsing — see `clados logs --help` for available flags. When a user reports "Phase 3 took 45 minutes and cost $15", `run.log` is what you read to reconstruct which API calls caused it.
 
 **The abort path has three distinct actions.** Going back (archives and re-runs from an earlier gate), restarting a phase (clears `.clados/wip/` for the current phase and re-runs from the first agent, without archiving incomplete artifacts), and abandoning (declares `status: "abandoned"` in session state and stops the pipeline, leaving all artifacts in place for later resumption or manual deletion) are distinct operations with separate confirmation flows. The `on_abort` DAG edge handles the restart case and routes through a cleanup node before returning to the first agent node of the current phase.
 

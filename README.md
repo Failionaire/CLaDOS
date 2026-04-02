@@ -1,5 +1,7 @@
 # CLaDOS
 
+## Highly Experimental (Use at your own risk)
+
 **Claude Logic and Development Operating System**
 
 A multi-agent software development system built on the Claude API. You describe an idea. A team of AI agents designs, critiques, architects, and builds it — with you approving every major decision before work continues.
@@ -39,7 +41,7 @@ $env:ANTHROPIC_API_KEY = "sk-ant-..."
 node bin/clados.js
 ```
 
-This starts a local server on a port between 3100–3199 and opens the UI in your browser. The **home screen** lets you create a new project or pick up an existing one — no subcommands needed. From there everything is driven through the web interface.
+This starts a local server on a port between 3100–3199 and opens the UI in your browser. The **home screen** lets you create a new project or pick up an existing one. From there everything is driven through the web interface.
 
 ### Optional: add `clados` to your PATH
 
@@ -48,9 +50,30 @@ npm link
 # Now you can use: clados
 ```
 
+### CLI subcommands
+
+```
+clados                             Start the server and open the UI
+clados continue <project-dir>      Re-enter a completed project with new changes
+clados doctor [project-dir]        Validate session state integrity
+clados logs [project-dir]          View filtered run.log (--agent, --phase, --errors, --raw)
+clados cost <project-dir>          Detailed per-phase, per-agent cost breakdown
+clados model-update [--apply]      Check/apply model alias updates in agent-registry.json
+clados workflow show               Print the current workflow graph as a table
+clados workflow validate           Run cycle detection and condition parsing on the graph
+clados agent add --name X ...      Scaffold a custom reviewer or agent
+clados agent list                  Show all registered agents (built-in and custom)
+clados agent remove <name>         Remove a custom agent
+clados agent test <name>           Dry-run dispatch against a sample project
+clados template list               Show all built-in and user templates
+clados template use <name>         Pre-fill a new project from a template
+clados template save <name>        Save the current project's config as a template
+clados help                        Show this list
+```
+
 ### Cost
 
-The default models are Claude Sonnet (agents) and Claude Opus (escalation). A full backend-only pipeline costs roughly **$0.50–$2.00** depending on project complexity and revision count. To test cheaply, swap all models in `agent-registry.json` to `claude-haiku-4-5` — see [docs/Testing-Plan.md](docs/Testing-Plan.md).
+Currently running Haiku for agents and Sonnet for escalation and the Conductor. To swap models, edit `agent-registry.json`.
 
 ---
 
@@ -58,7 +81,7 @@ The default models are Claude Sonnet (agents) and Claude Opus (escalation). A fu
 
 Most "AI coding" tools generate code and hope for the best. CLaDOS works the way a real engineering team does — prioritizing agile prototyping, rapid iteration, and code-as-truth workflows:
 
-- A **Conductor** (Claude Opus) manages the entire process and never writes code itself
+- A **Conductor** (Claude Sonnet) manages the entire process and never writes code itself
 - A **Validator** agent acts as an objective linter — using static execution paths, exact test fixtures, and security checklists to find concrete issues, not hallucinated architectural pedantry
 - Every phase ends with a **human approval gate** — you review the output and the Validator's findings, deciding whether to proceed, revise, or explicitly override warnings
 - Phase handoffs are file-based, with cross-file code context shared via **AST/LSP programmatic extraction** rather than lossy LLM text summaries
@@ -72,38 +95,51 @@ CLaDOS runs as a persistent orchestrator server with a React/Vite Kanban board U
 ### The pipeline
 
 ```
-Phase 0 — Concept       PM drafts a one-page concept. Validator reviews.
+Phase 0 — Concept       PM runs a discovery pass (questions + assumptions).
+                        You answer or accept defaults at the Discovery Gate.
+                        PM writes the concept doc. Validator reviews.
      ↓ Gate 1: Approve the prototype scope.
 Phase 1 — Architecture  PM writes full PRD. Architect defines stack and schema.
                         Prototype Engineer scaffolds real code.
      ↓ Gate 2: Approve the architecture.
 Phase 2 — Build         Engineers implement in batches. Contract Validator runs.
                         QA writes black-box tests (no source access).
-                        Test Runner executes everything. Validator reviews results.
+                        Test Runner executes everything.
+                        Validator reviews the full build.
+                        Refiner auto-fixes should_fix/suggestion findings (if enabled).
+                        (Engineers can request architecture changes mid-build
+                        via Micro-Gate — user approves the diff before work continues.)
      ↓ Gate 3: Approve the build.
 Phase 3 — Document      Docs and PM write README, runbook, and final API spec
                         based on the actual functioning codebase.
      ↓ Gate 4: Approve the documentation.
-Phase 4 — Ship          DevOps generates Dockerfiles, CI/CD, and deployment config.
+Phase 4 — Infra         DevOps generates Dockerfiles, CI/CD, and deployment config.
      ↓ Gate 5: Approve the deployment.
+
+After Gate 5:           Interactive Mode — chat directly with the codebase using
+                        full AST context. The AI proposes diffs; you approve writes.
+                        Run `clados continue <project>` to re-invoke the pipeline
+                        for a new feature, bug fix, or refactor.
 ```
 
 ### Agents
 
 | Agent | Role | Default Model |
 |-------|------|--------------|
-| PM | Concept → PRD → final spec | Claude Sonnet |
-| Architect | Stack, schema, OpenAPI spec | Claude Sonnet |
-| Engineer | Code implementation in batches | Claude Sonnet |
-| QA | Black-box tests (asymmetric context — no source access) | Claude Sonnet |
-| Validator | Hard results review + structured findings | Claude Sonnet |
-| Security *(optional)* | Threat model + dependency audit | Claude Sonnet |
-| Wrecker *(optional)* | Adversarial edge-case tests | Claude Sonnet |
-| DevOps | Dockerfiles, CI/CD, runbook | Claude Sonnet |
-| Docs | README, changelog, runbook | Claude Sonnet |
-| Conductor | Orchestration — TypeScript, not a prompt | Claude Opus |
+| PM | Discovery → Concept → PRD → final spec | Claude Haiku |
+| Architect | Stack, schema, OpenAPI spec | Claude Haiku |
+| Engineer | Code implementation in batches | Claude Haiku |
+| QA | Black-box tests (asymmetric context — no source access) | Claude Haiku |
+| Validator | Hard results review + structured findings | Claude Haiku |
+| Refiner *(optional)* | Auto-fixes should_fix/suggestion findings from Validator | Claude Sonnet |
+| Security *(optional)* | Threat model + dependency audit | Claude Haiku |
+| Wrecker *(optional)* | Adversarial edge-case tests | Claude Haiku |
+| DevOps | Dockerfiles, CI/CD, runbook | Claude Haiku |
+| Docs | README, changelog, runbook | Claude Haiku |
+| Interactive *(post-pipeline)* | Chat-based iteration on the completed project | Claude Haiku |
+| Conductor | Orchestration — TypeScript, not a prompt | Claude Sonnet |
 
-Any agent escalates to Opus automatically when a phase hits 3 unresolved revision cycles or the project is flagged as high-complexity.
+Any agent escalates to Sonnet automatically when a phase hits 3 unresolved revision cycles or the project is flagged as high-complexity.
 
 ---
 
@@ -123,62 +159,84 @@ Any agent escalates to Opus automatically when a phase hits 3 unresolved revisio
 
 **Budget is always enforced before dispatch, never mid-stream.** Mid-stream termination produces corrupted artifacts that trigger Validator findings and expensive revision cycles. Pre-flight token budgeting prevents this entirely.
 
+**Workflow is a graph, not hardcoded.** The phase sequence is encoded in `workflow-graph.default.json` and evaluated by a condition DSL engine. Custom workflows can override it without changing the Conductor. No `eval()` — conditions are field/operator/value string expressions only.
+
+**Multi-language, same pipeline.** TypeScript, Python, and Go projects use the same orchestrator, phases, and gate flow. Language-specific behavior is isolated to stack profiles, route parsers, and test executors — the Conductor doesn't care what language it's building.
+
+**Re-invocation is a first-class workflow.** Once a project completes, `clados continue` re-enters the pipeline at the right phase for the change being made (concept, architecture, build, docs, or infra). Prior artifacts carry forward. The delta is shown explicitly at each gate.
+
 ---
 
 ## UI
 
-React/Vite Kanban board.
+React/Vite Kanban board with Aperture Science theme (dark and light modes, self-hosted fonts).
 
 - One column per phase, each containing agent cards
 - Card states: Pending → Running → Done / Flagged / Error
-- Running cards show the current section being written (extracted from structural markers, not raw tokens) with a slow color-cycle border animation
-- Gate drawer: resizable, shows artifact and Validator findings side by side
+- Running cards show the current section being written with a slow color-cycle border animation, elapsed timer, section checklist, and live token bar
+- Gate modal: floating, three-pane layout (artifact | revision note | findings); hides the findings pane when no findings exist
+- Decisions panel: audit trail of every conductor decision, question answered, and `conductor.reason()` call
+- Budget band: expandable bar showing spend vs cap, which agent would breach, inline cap-raise, optional agent toggles
+- Micro-Gate: compact diff-approval modal when the Engineer requests an architecture change mid-build
+- Question Gate: unified discovery/agent-question form with default assumptions as placeholders
+- Artifact version dropdown on done cards with rollback to any history version
+- Interactive chat panel (visible after pipeline completes): message the codebase and approve proposed diffs
+- Re-invocation Gate: phase classification + override before re-entering the pipeline on a completed project
 - Revision counter turns amber at revision 2, red at revision 3+
-- Per-gate cost estimate for the next phase (single-pass, no revision speculation)
-- Running cost total in topbar after Gate 1, with per-phase hover breakdown
+- Per-gate cost estimate for the next phase; running total in topbar after Gate 1
 - No upfront pipeline estimate — lower-bound anchors erode trust
 
 ---
 
 ## Roadmap
 
-### v1 — Core loop *(current focus)*
-Everything above. The hardcoded 5-phase sequence must work reliably on real projects before anything else ships.
+### v1–v4 — Core pipeline through lifecycle *(implemented)*
+The full V1–V4 feature set is implemented:
+- 5-phase hardcoded sequence (Concept → Architecture → Build → Document → Infra)
+- 11 agents including Refiner and Interactive
+- Discovery gate (Phase 0 two-pass PM flow) and agent question gates
+- Micro-pivots during Build (Engineer requests architecture change; user approves diff)
+- Configurable workflow DAG with condition DSL (`workflow-graph.default.json`)
+- Custom agent framework (`clados agent add/list/remove/test`)
+- IDE bridge (file watcher on `src/` and `wip/`, deep-link URIs in Validator findings)
+- Multi-language support: TypeScript (Express), Python (FastAPI), Go (Gin)
+- Interactive Mode (post-pipeline AST-aware chat, diff approval)
+- Re-invocation workflow (`clados continue`, delta detection, re-invocation gate)
+- Decisions panel, budget band, artifact version pinning
+- Full CLI: `doctor`, `logs`, `cost`, `model-update`, `workflow`, `agent`, `template`, `continue`
+- Session state SHA-256 checksums, `clados doctor` integrity validation
+- Troubleshooting guide and operator runbook
 
-### v2 — Operational polish *(after v1 is proven on 3 real projects)*
-- Agent questions before artifact generation
-- Decisions panel (audit trail of all Conductor decisions)
-- Budget band UI with per-agent toggles
-- Artifact version pinning
+### Next — Prove it on real projects
+Before adding anything new, the pipeline needs to complete end-to-end on real projects across all three languages and multiple project types. Priorities:
+1. Run 3 TypeScript projects (backend API, full-stack app, CLI tool) to completion
+2. Run 1 Python FastAPI project to verify the language layer works
+3. Test crash recovery with intentional process kills
+4. Calibrate budget caps for Sonnet/Opus production models
+5. First real use of `clados continue` to add a feature to a completed project
 
-### v3+ — Extensibility
-- Configurable workflow DAG with condition DSL
-- Custom agent framework (`clados agent add`)
-- IDE bridge (bi-directional file sync, deep-link URIs)
-- Multi-language / multi-stack support
-
-### Future — Interactive Mode
-Once a project ships, CLaDOS converts to an interactive mode where you can highlight generated code and ask the AI to fix it — with full AST context of the workspace.
+### Future
+- Go support in contract validator and test runner (executors implemented, parser needs validation)
+- Rust support (stack profile exists; executor and parser not yet implemented)
+- Additional languages (Java, Ruby) — only after Go/Rust are proven
+- `clados agent test` dry-run for custom agents with real project fixture
+- Enhanced cost analytics dashboard in the UI (currently CLI-only via `clados cost`)
 
 ---
 
 ## Docs
 
-- [User Guide](docs/User-Guide.md) — step-by-step walkthrough of the pipeline and UI
-- [Test Projects](docs/Test-Projects.md) — suggested test projects ordered by complexity
-- [Testing Plan](docs/Testing-Plan.md) — how to test without burning through API credits
-- [Goal document](docs/CLaDOS-Goal.md) — full vision and design rationale
-- [V1 Spec](docs/V1-Spec-Alpha.md) — buildable spec for v1; if it's not in here, it doesn't ship
-- [V2 Spec](docs/V2-Spec-Beta.md) — what gets added after v1 is proven
-- [UI Mockup](docs/clados-mockup.html) — open in a browser
+- [User Guide](docs/User-Guide.md) — step-by-step walkthrough of the pipeline, CLI, and UI
+- [Troubleshooting](docs/Troubleshooting.md) — operator runbook for the most common failures
+- [System specification](docs/CLaDOS-Spec.md) — full design rationale, architecture decisions, and pipeline spec
 
 ---
 
 ## Status
 
-**v1 implementation in progress.** Core orchestrator, all 5 phases, 9 agents, contract validator, test runner, session state and crash recovery, and the React UI are implemented. Active testing underway.
+**V1–V4 feature implementation complete.** Full pipeline, all 11 agents, configurable DAG, multi-language support (TypeScript, Python, Go), interactive mode, re-invocation, and full CLI implemented. Active field testing underway on real projects to validate end-to-end behavior before declaring a stable release.
 
-See [CHANGELOG](Changelog.md) for what's been built and what's left.
+See [CHANGELOG](Changelog.md) for the full history.
 
 ---
 

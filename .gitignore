@@ -25,3 +25,7 @@ npm-debug.log*
 .DS_Store
 Thumbs.db
 .vscode/settings.json
+
+# Local dev/testing notes
+docs/Test-Projects.md
+docs/Testing-Plan.md

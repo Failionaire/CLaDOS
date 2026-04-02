@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react';
 import type { SessionState } from '../types';
 import { ArtifactViewer } from './ArtifactViewer';
+import { VersionDropdown } from './VersionDropdown';
 
 interface ArtifactSidebarProps {
   isOpen: boolean;
@@ -12,6 +13,7 @@ export function ArtifactSidebar({ isOpen, onClose, sessionState }: ArtifactSideb
   const [selectedArtifact, setSelectedArtifact] = useState<string | null>(null);
   const [content, setContent] = useState<string>('');
   const [isLoading, setIsLoading] = useState(false);
+  const [refreshKey, setRefreshKey] = useState(0);
 
   // Group artifacts roughly by phase based on the file name prefix (e.g. 0-pm.md -> Phase 0)
   const artifacts = sessionState?.artifacts ?? {};
@@ -41,7 +43,7 @@ export function ArtifactSidebar({ isOpen, onClose, sessionState }: ArtifactSideb
     return () => {
       active = false;
     };
-  }, [selectedArtifact, isOpen]);
+  }, [selectedArtifact, isOpen, refreshKey]);
 
   // Keep selected artifact valid if it disappears (shouldn't really happen)
   useEffect(() => {
@@ -75,7 +77,12 @@ export function ArtifactSidebar({ isOpen, onClose, sessionState }: ArtifactSideb
                 style={{ ...styles.fileItem, ...(isSelected ? styles.fileItemSelected : {}) }}
                 onClick={() => setSelectedArtifact(key)}
               >
-                📄 {key}
+                <span style={{ flex: 1, overflow: 'hidden', textOverflow: 'ellipsis' }}>📄 {key}</span>
+                <VersionDropdown
+                  artifactKey={key}
+                  currentVersion={artifacts[key]?.version ?? 1}
+                  onReverted={() => setRefreshKey(k => k + 1)}
+                />
               </div>
             );
           })}

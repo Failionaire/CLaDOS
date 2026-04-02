@@ -20,7 +20,6 @@ export function resolveModel(
 
 /**
  * Evaluate the enabled_when field from the agent registry.
- * Only three valid values in v1 — anything else throws at startup.
  */
 export function isAgentEnabled(
   enabledWhen: AgentEnabledWhen,
@@ -29,6 +28,7 @@ export function isAgentEnabled(
   if (enabledWhen === 'always') return true;
   if (enabledWhen === 'config.security') return config.security_enabled;
   if (enabledWhen === 'config.wrecker') return config.wrecker_enabled;
+  if (enabledWhen === 'config.refiner') return config.refiner_enabled ?? false;
   throw new Error(`Unknown enabled_when value: ${enabledWhen as string}`);
 }
 

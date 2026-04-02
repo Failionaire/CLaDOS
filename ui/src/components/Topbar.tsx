@@ -225,7 +225,7 @@ const barStyles = {
 
 interface TopbarProps {
   sessionState: SessionState | null;
-  connectionStatus: 'connecting' | 'connected' | 'disconnected' | 'failed';
+  connectionStatus: 'connecting' | 'connected' | 'reconnected' | 'disconnected' | 'failed';
   onFocusGate: () => void;
   hasPendingGate: boolean;
   gateNumber?: number;
@@ -233,11 +233,13 @@ interface TopbarProps {
   onToggleFocus: () => void;
   onToggleSidebar: () => void;
   sidebarOpen: boolean;
+  onToggleDecisions: () => void;
+  decisionsOpen: boolean;
   theme: 'dark' | 'light';
   onToggleTheme: () => void;
 }
 
-export function Topbar({ sessionState, connectionStatus, onFocusGate, hasPendingGate, gateNumber, focusMode, onToggleFocus, onToggleSidebar, sidebarOpen, theme, onToggleTheme }: TopbarProps) {
+export function Topbar({ sessionState, connectionStatus, onFocusGate, hasPendingGate, gateNumber, focusMode, onToggleFocus, onToggleSidebar, sidebarOpen, onToggleDecisions, decisionsOpen, theme, onToggleTheme }: TopbarProps) {
   const [showCostBreakdown, setShowCostBreakdown] = useState(false);
   const status = sessionState?.pipeline_status ?? 'idle';
   const phase = sessionState?.current_phase ?? 0;
@@ -284,7 +286,7 @@ export function Topbar({ sessionState, connectionStatus, onFocusGate, hasPending
 
   return (
     <header className="topbar" style={{ position: 'fixed', top: 0, left: 0, right: 0, zIndex: 100 }}>
-      {connectionStatus !== 'connected' && (
+      {connectionStatus !== 'connected' && connectionStatus !== 'reconnected' && (
         <div
           className="reconnect-banner"
           style={connectionStatus === 'failed' ? { background: 'var(--red-lo)', borderColor: 'var(--red-border)', color: 'var(--red)' } : undefined}
@@ -292,7 +294,17 @@ export function Topbar({ sessionState, connectionStatus, onFocusGate, hasPending
           <span className="dot" style={connectionStatus === 'failed' ? { background: 'var(--red)' } : undefined} />
           {connectionStatus === 'connecting' && 'Connecting…'}
           {connectionStatus === 'disconnected' && "I can't believe you disconnected. Retrying, because apparently I have to."}
-          {connectionStatus === 'failed' && "Could not reconnect — restart CLaDOS to continue. Or don't. See if I care."}
+          {connectionStatus === 'failed' && "Could not reconnect \u2014 restart CLaDOS to continue. Or don't. See if I care."}
+        </div>
+      )}
+
+      {connectionStatus === 'reconnected' && (
+        <div
+          className="reconnect-banner"
+          style={{ background: 'var(--green-lo)', borderColor: 'var(--green-border)', color: 'var(--green)' }}
+        >
+          <span className="dot" style={{ background: 'var(--green)' }} />
+          Reconnected
         </div>
       )}
 
@@ -374,6 +386,15 @@ export function Topbar({ sessionState, connectionStatus, onFocusGate, hasPending
             title="View generated files"
           >
             Files
+          </button>
+
+          {/* Decisions panel toggle */}
+          <button
+            className={`btn btn-ghost btn-sm${decisionsOpen ? ' active' : ''}`}
+            onClick={onToggleDecisions}
+            title="View pipeline decisions"
+          >
+            Decisions
           </button>
 
           {/* Theme toggle (§7.5) */}

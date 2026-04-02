@@ -151,13 +151,15 @@ export function createExpressApp(ctx: ServerContext): ReturnType<typeof createSe
         return;
       }
 
-      const { name, idea, project_type, security_enabled, wrecker_enabled, spend_cap } = req.body as {
+      const { name, idea, project_type, security_enabled, wrecker_enabled, spend_cap, autonomy_mode, refiner_enabled } = req.body as {
         name?: string;
         idea?: string;
         project_type?: string;
         security_enabled?: boolean;
         wrecker_enabled?: boolean;
         spend_cap?: number | null;
+        autonomy_mode?: 'guided' | 'autonomous';
+        refiner_enabled?: boolean;
       };
 
       if (!name || !/^[a-zA-Z0-9_-]+$/.test(name)) {
@@ -189,6 +191,8 @@ export function createExpressApp(ctx: ServerContext): ReturnType<typeof createSe
         wrecker_enabled: Boolean(wrecker_enabled),
         is_high_complexity: false,
         spend_cap: typeof spend_cap === 'number' && spend_cap > 0 ? spend_cap : null,
+        autonomy_mode: autonomy_mode ?? 'guided',
+        refiner_enabled: Boolean(refiner_enabled),
       };
 
       const session = new SessionManager();
@@ -290,6 +294,51 @@ export function createExpressApp(ctx: ServerContext): ReturnType<typeof createSe
   });
 
   /**
+   * POST /gate/discovery/respond
+   * Body: DiscoveryGateResponse
+   */
+  app.post('/gate/discovery/respond', (req: Request, res: Response) => {
+    if (!activeProject) { res.status(409).json({ error: 'No active project' }); return; }
+    const body = req.body as { answers?: Record<string, string>; additional_context?: string };
+    if (!body.answers || typeof body.answers !== 'object') {
+      res.status(400).json({ error: 'answers object is required' });
+      return;
+    }
+    activeProject.conductor.handleDiscoveryGateResponse(body as import('./types.js').DiscoveryGateResponse);
+    res.json({ ok: true });
+  });
+
+  /**
+   * POST /gate/question/respond
+   * Body: QuestionGateResponse
+   */
+  app.post('/gate/question/respond', (req: Request, res: Response) => {
+    if (!activeProject) { res.status(409).json({ error: 'No active project' }); return; }
+    const body = req.body as { answers?: Record<string, string> };
+    if (!body.answers || typeof body.answers !== 'object') {
+      res.status(400).json({ error: 'answers object is required' });
+      return;
+    }
+    activeProject.conductor.handleQuestionGateResponse(body as import('./types.js').QuestionGateResponse);
+    res.json({ ok: true });
+  });
+
+  /**
+   * POST /gate/micro/respond
+   * Body: MicroGateResponse
+   */
+  app.post('/gate/micro/respond', (req: Request, res: Response) => {
+    if (!activeProject) { res.status(409).json({ error: 'No active project' }); return; }
+    const body = req.body as { action?: string; rejection_reason?: string };
+    if (!body.action || !['approve', 'reject'].includes(body.action)) {
+      res.status(400).json({ error: 'action must be approve or reject' });
+      return;
+    }
+    activeProject.conductor.handleMicroGateResponse(body as import('./types.js').MicroGateResponse);
+    res.json({ ok: true });
+  });
+
+  /**
    * GET /project/state
    * Returns the current session state for reconnection.
    */
@@ -358,6 +407,74 @@ export function createExpressApp(ctx: ServerContext): ReturnType<typeof createSe
   });
 
   /**
+   * GET /artifact/versions?path=artifact-key
+   * Lists version history for an artifact from .clados/history/.
+   */
+  app.get('/artifact/versions', async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      if (!activeProject) { res.status(409).json({ error: 'No active project' }); return; }
+      const relPath = req.query['path'] as string;
+      if (!relPath) { res.status(400).json({ error: 'path query param required' }); return; }
+
+      const state = await activeProject.session.read(activeProject.projectDir);
+      const currentVersion = state.artifacts[relPath]?.version ?? 1;
+      const ext = path.extname(relPath);
+      const base = path.basename(relPath, ext);
+      const dir = path.dirname(relPath);
+      const historyDir = path.join(activeProject.projectDir, '.clados', 'history', dir);
+
+      const versions: Array<{ version: number; filename: string }> = [];
+      if (fs.existsSync(historyDir)) {
+        const files = await fs.promises.readdir(historyDir);
+        const pattern = new RegExp(`^${base.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}_v(\\d+)${ext.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`);
+        for (const f of files) {
+          const m = f.match(pattern);
+          if (m) versions.push({ version: parseInt(m[1]!, 10), filename: f });
+        }
+      }
+      // Add the current version
+      versions.push({ version: currentVersion, filename: `${base}${ext}` });
+      versions.sort((a, b) => b.version - a.version);
+      res.json({ versions });
+    } catch (err) { next(err); }
+  });
+
+  /**
+   * POST /artifact/revert
+   * Body: { path: string, version: number }
+   * Reverts an artifact to a previous version from history.
+   */
+  app.post('/artifact/revert', async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      if (!activeProject) { res.status(409).json({ error: 'No active project' }); return; }
+      const { path: relPath, version } = req.body as { path: string; version: number };
+      if (!relPath || !version) { res.status(400).json({ error: 'path and version required' }); return; }
+
+      const claDosDir = path.join(activeProject.projectDir, '.clados');
+      const ext = path.extname(relPath);
+      const base = path.basename(relPath, ext);
+      const dir = path.dirname(relPath);
+      const archivePath = path.join(claDosDir, 'history', dir, `${base}_v${version}${ext}`);
+
+      if (!fs.existsSync(archivePath)) { res.status(404).json({ error: 'Version not found in history' }); return; }
+
+      // Archive current version first
+      await activeProject.session.archiveArtifact(activeProject.projectDir, relPath);
+      // Copy archived version to current
+      const currentPath = path.join(claDosDir, relPath);
+      await fs.promises.copyFile(archivePath, currentPath);
+      // Register as new version
+      const content = await fs.promises.readFile(currentPath, 'utf-8');
+      await activeProject.session.registerArtifact(activeProject.projectDir, relPath, {
+        path: relPath,
+        token_count: Math.ceil(content.length / 4),
+        version: 0, // registerArtifact will increment
+      });
+      res.json({ ok: true, message: `Reverted ${relPath} to v${version}` });
+    } catch (err) { next(err); }
+  });
+
+  /**
    * POST /agent/retry
    */
   app.post('/agent/retry', (req: Request, res: Response) => {
@@ -410,6 +527,179 @@ export function createExpressApp(ctx: ServerContext): ReturnType<typeof createSe
     if (!activeProject) { res.status(409).json({ error: 'No active project' }); return; }
     activeProject.conductor.handleBudgetAbort();
     res.json({ ok: true });
+  });
+
+  /**
+   * POST /config/toggle-agent
+   * Body: { field: string, enabled: boolean }
+   * Toggles an optional agent (security_enabled, wrecker_enabled, refiner_enabled).
+   */
+  app.post('/config/toggle-agent', async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      if (!activeProject) { res.status(409).json({ error: 'No active project' }); return; }
+      const { field, enabled } = req.body as { field: string; enabled: boolean };
+      const allowed = ['security_enabled', 'wrecker_enabled', 'refiner_enabled'];
+      if (!allowed.includes(field)) { res.status(400).json({ error: `Invalid field: ${field}` }); return; }
+      const current = await activeProject.session.read(activeProject.projectDir);
+      await activeProject.session.update(activeProject.projectDir, {
+        config: { ...current.config, [field]: enabled },
+      });
+      res.json({ ok: true });
+    } catch (err) { next(err); }
+  });
+
+  // ─── Interactive mode (V4) ──────────────────────────────────────────────────
+
+  let interactiveSession: InstanceType<typeof import('./interactive.js').InteractiveSession> | null = null;
+
+  app.post('/interactive/message', async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      if (!activeProject) { res.status(409).json({ error: 'No active project' }); return; }
+      const state = await activeProject.session.read(activeProject.projectDir);
+      if (state.pipeline_status !== 'complete') { res.status(400).json({ error: 'Interactive mode requires complete status' }); return; }
+
+      // Lazy-init the interactive session
+      if (!interactiveSession) {
+        const { InteractiveSession } = await import('./interactive.js');
+        interactiveSession = new InteractiveSession({
+          apiKey: ctx.apiKey,
+          model: 'claude-sonnet-4-6',
+          projectDir: activeProject.projectDir,
+          state,
+          logger: activeProject.conductor.logger,
+        });
+      }
+
+      const { message } = req.body as { message?: string };
+      if (!message) { res.status(400).json({ error: 'message required' }); return; }
+
+      const content = await interactiveSession.sendMessage(message);
+      const diff = interactiveSession.pendingDiff;
+      res.json({ content, diff });
+    } catch (err) { next(err); }
+  });
+
+  app.post('/interactive/diff/approve', async (_req: Request, res: Response) => {
+    if (!interactiveSession) { res.status(400).json({ error: 'No interactive session' }); return; }
+    interactiveSession.approveDiff();
+    res.json({ ok: true });
+  });
+
+  app.post('/interactive/diff/reject', async (_req: Request, res: Response) => {
+    if (!interactiveSession) { res.status(400).json({ error: 'No interactive session' }); return; }
+    interactiveSession.rejectDiff();
+    res.json({ ok: true });
+  });
+
+  // ─── Re-invocation (V4) ─────────────────────────────────────────────────────
+
+  /**
+   * GET /templates/list
+   * Returns all available project templates (built-in + user).
+   */
+  app.get('/templates/list', async (_req: Request, res: Response) => {
+    try {
+      const { templateCommand } = await import('./cli/template.js');
+      // Re-use the built-in templates from the module
+      const os = await import('os');
+      const TEMPLATES_DIR = path.join(os.homedir(), '.clados', 'templates');
+      const builtIn = [
+        { name: 'typescript-api', description: 'TypeScript REST API with Express, Prisma, and PostgreSQL', config: { project_type: 'backend-only', security_enabled: true, wrecker_enabled: false }, stack_preset: { language: 'typescript', backend_framework: 'express' } },
+        { name: 'typescript-fullstack', description: 'TypeScript full-stack with Express + React', config: { project_type: 'full-stack', security_enabled: true, wrecker_enabled: false }, stack_preset: { language: 'typescript', backend_framework: 'express' } },
+        { name: 'python-api', description: 'Python REST API with FastAPI and SQLAlchemy', config: { project_type: 'backend-only', security_enabled: true, wrecker_enabled: false }, stack_preset: { language: 'python', backend_framework: 'fastapi' } },
+        { name: 'python-cli', description: 'Python CLI tool with Click', config: { project_type: 'cli-tool', security_enabled: false, wrecker_enabled: false }, stack_preset: { language: 'python', backend_framework: 'none' } },
+        { name: 'go-api', description: 'Go REST API with Gin and GORM', config: { project_type: 'backend-only', security_enabled: true, wrecker_enabled: false }, stack_preset: { language: 'go', backend_framework: 'gin' } },
+      ];
+      // Load user templates
+      const userTemplates: typeof builtIn = [];
+      if (fs.existsSync(TEMPLATES_DIR)) {
+        for (const file of fs.readdirSync(TEMPLATES_DIR).filter(f => f.endsWith('.json'))) {
+          try {
+            userTemplates.push(JSON.parse(fs.readFileSync(path.join(TEMPLATES_DIR, file), 'utf-8')));
+          } catch { /* skip */ }
+        }
+      }
+      void templateCommand; // ensure import isn't tree-shaken
+      res.json([...builtIn, ...userTemplates]);
+    } catch { res.json([]); }
+  });
+
+  /**
+   * POST /reinvoke/detect
+   * Body: { change_description: string }
+   * Runs delta detection and returns the recommended entry phase.
+   */
+  app.post('/reinvoke/detect', async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      if (!activeProject) { res.status(409).json({ error: 'No active project' }); return; }
+      const state = await activeProject.session.read(activeProject.projectDir);
+      if (state.pipeline_status !== 'complete') { res.status(400).json({ error: 'Re-invocation requires complete status' }); return; }
+
+      const { change_description } = req.body as { change_description?: string };
+      if (!change_description) { res.status(400).json({ error: 'change_description required' }); return; }
+
+      const { detectDelta } = await import('./delta-detector.js');
+      const result = await detectDelta(
+        ctx.apiKey,
+        'claude-haiku-4-5-20251001',
+        activeProject.projectDir,
+        change_description,
+        state,
+        activeProject.conductor.logger,
+      );
+
+      // Determine which artifacts will be regenerated
+      const phasePrefixes: Record<number, string> = { 0: '00-', 1: '01-', 2: '02-', 3: '03-', 4: '04-' };
+      const affectedArtifacts: string[] = [];
+      for (let p = result.entry_phase; p <= 4; p++) {
+        const prefix = phasePrefixes[p];
+        if (prefix && state.artifacts) {
+          for (const key of Object.keys(state.artifacts)) {
+            if (key.startsWith(prefix)) affectedArtifacts.push(key);
+          }
+        }
+      }
+
+      res.json({ ...result, affected_artifacts: affectedArtifacts });
+    } catch (err) { next(err); }
+  });
+
+  /**
+   * POST /reinvoke/start
+   * Body: { entry_phase: number, change_description: string }
+   * Starts the pipeline from the specified phase.
+   */
+  app.post('/reinvoke/start', async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      if (!activeProject) { res.status(409).json({ error: 'No active project' }); return; }
+      const state = await activeProject.session.read(activeProject.projectDir);
+      if (state.pipeline_status !== 'complete') { res.status(400).json({ error: 'Re-invocation requires complete status' }); return; }
+
+      const { entry_phase, change_description } = req.body as { entry_phase?: number; change_description?: string };
+      if (entry_phase == null || !change_description) { res.status(400).json({ error: 'entry_phase and change_description required' }); return; }
+
+      // Record the re-invocation
+      const reinvocation = {
+        original_completed_at: state.completed_at ?? new Date().toISOString(),
+        change_description,
+        detected_entry_phase: entry_phase,
+        actual_entry_phase: entry_phase,
+        timestamp: new Date().toISOString(),
+      };
+
+      const reinvocations = [...(state.reinvocations ?? []), reinvocation];
+      await activeProject.session.update(activeProject.projectDir, {
+        pipeline_status: 'agent_running',
+        current_phase: entry_phase,
+        reinvocations,
+      });
+
+      // Broadcast state change
+      const updated = await activeProject.session.read(activeProject.projectDir);
+      broadcast({ type: 'state:snapshot', state: updated });
+
+      res.json({ ok: true, message: `Pipeline resuming from phase ${entry_phase}` });
+    } catch (err) { next(err); }
   });
 
   // SPA fallback for client-side routing

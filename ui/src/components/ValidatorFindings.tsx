@@ -1,9 +1,12 @@
+import type React from 'react';
 import type { Finding, FindingSeverity } from '../types';
 
 interface ValidatorFindingsProps {
   findings: Finding[];
   overrides: Record<string, boolean>;
   onOverrideChange: (id: string, overridden: boolean) => void;
+  editorScheme?: string;
+  projectDir?: string;
 }
 
 const SEVERITY_ORDER: FindingSeverity[] = ['must_fix', 'should_fix', 'suggestion'];
@@ -28,7 +31,7 @@ const STATUS_LABEL: Record<string, string> = {
   new_discovery: 'Discovery',
 };
 
-export function ValidatorFindings({ findings, overrides, onOverrideChange }: ValidatorFindingsProps) {
+export function ValidatorFindings({ findings, overrides, onOverrideChange, editorScheme = 'vscode', projectDir = '' }: ValidatorFindingsProps) {
   const sorted = [...findings].sort((a, b) => {
     return SEVERITY_ORDER.indexOf(a.severity) - SEVERITY_ORDER.indexOf(b.severity);
   });
@@ -67,8 +70,17 @@ export function ValidatorFindings({ findings, overrides, onOverrideChange }: Val
           <div style={styles.description}>{finding.description}</div>
           {finding.file && (
             <div style={styles.location}>
-              {finding.file}
-              {finding.line != null && `:${finding.line}`}
+              {(() => {
+                const filePath = projectDir ? `${projectDir}/${finding.file}` : finding.file;
+                const href = finding.line != null
+                  ? `${editorScheme}://file/${filePath.replace(/\\/g, '/')}:${finding.line}`
+                  : `${editorScheme}://file/${filePath.replace(/\\/g, '/')}`;
+                return (
+                  <a href={href} style={styles.deepLink} title="Open in editor">
+                    {finding.file}{finding.line != null && `:${finding.line}`}
+                  </a>
+                );
+              })()}
             </div>
           )}
         </div>
@@ -137,6 +149,11 @@ const styles = {
     color: 'var(--text-3)',
     fontFamily: 'var(--font-mono)',
   },
+  deepLink: {
+    color: 'var(--ap-blue)',
+    textDecoration: 'none',
+    cursor: 'pointer',
+  } as React.CSSProperties,
   empty: {
     padding: 16,
     color: 'var(--text-3)',

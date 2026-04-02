@@ -215,6 +215,11 @@ export function AgentCard({ card, onRetry, onSkip, onOpenGate }: AgentCardProps)
           </div>
           <div className="card-indicators">
              {card.contextCompressed && <span className="indicator indicator-compressed">compressed</span>}
+             {card.contextBudgetExhausted && (
+               <span className="indicator indicator-compressed" style={{ color: 'var(--amber)', borderColor: 'var(--amber-border)' }} title="Summarizer budget cap was hit — this agent received truncated context and may have missed information">
+                 ⚠ context budget exhausted
+               </span>
+             )}
              {card.contextCompressed && card.fullArtifactsFetched > 0 && (
                <span className="indicator indicator-compressed" style={{ marginLeft: 4 }}>
                  fetched {card.fullArtifactsFetched} full artifact{card.fullArtifactsFetched === 1 ? '' : 's'}

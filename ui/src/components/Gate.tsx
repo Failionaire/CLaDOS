@@ -2,14 +2,17 @@ import { useState, useEffect, useCallback } from 'react';
 import { ArtifactViewer } from './ArtifactViewer';
 import { ValidatorFindings } from './ValidatorFindings';
 import { ConfirmModal } from './ConfirmModal';
-import type { Finding, WsGateOpen } from '../types';
+import type { Finding, SessionState, WsGateOpen } from '../types';
 
 interface GateProps {
   gate: WsGateOpen | null;
+  sessionState: SessionState | null;
   onMinimize: () => void;
   onClose: () => void;
   /** Called synchronously before onClose so the board can optimistically clear the gate card. */
   onResolved?: (phase: number, approved: boolean) => void;
+  /** External file changes detected by file watcher */
+  externalFileChanges?: string[];
 }
 
 type GateAction = 'approve' | 'revise' | 'goto' | 'abort';
@@ -17,7 +20,26 @@ type GateAction = 'approve' | 'revise' | 'goto' | 'abort';
 const REVISION_WARN_THRESHOLD = 2;
 const REVISION_ERROR_THRESHOLD = 3;
 
-export function Gate({ gate, onMinimize, onClose, onResolved }: GateProps) {
+/** Returns artifact keys from sessionState that belong to phases >= the given phase. */
+function getArtifactsForPhases(sessionState: SessionState | null, fromPhase: number): string[] {
+  if (!sessionState?.artifacts) return [];
+  const phasePrefixes: Record<number, string[]> = {
+    0: ['00-'],
+    1: ['01-'],
+    2: ['02-build'],
+    3: ['03-'],
+    4: ['04-'],
+  };
+  return Object.keys(sessionState.artifacts).filter((key) => {
+    for (let p = fromPhase; p <= 4; p++) {
+      const prefixes = phasePrefixes[p] ?? [];
+      if (prefixes.some((pfx) => key.startsWith(pfx))) return true;
+    }
+    return false;
+  });
+}
+
+export function Gate({ gate, sessionState, onMinimize, onClose, onResolved, externalFileChanges }: GateProps) {
   const [artifactContent, setArtifactContent] = useState<string>('');
   const [findings, setFindings] = useState<Finding[]>([]);
   const [overrides, setOverrides] = useState<Record<string, boolean>>({});
@@ -33,6 +55,14 @@ export function Gate({ gate, onMinimize, onClose, onResolved }: GateProps) {
     onConfirm: () => void;
     variant?: 'danger' | 'warning';
   } | null>(null);
+  const [externalChanges, setExternalChanges] = useState<string[]>([]);
+
+  // Sync external file changes from prop
+  useEffect(() => {
+    if (externalFileChanges && externalFileChanges.length > 0) {
+      setExternalChanges(prev => [...new Set([...prev, ...externalFileChanges])]);
+    }
+  }, [externalFileChanges]);
 
   // Reset state when gate changes
   useEffect(() => {
@@ -41,6 +71,7 @@ export function Gate({ gate, onMinimize, onClose, onResolved }: GateProps) {
     setRevisionNote('');
     setError(null);
     setMoreOpen(false);
+    setExternalChanges([]);
     setFindings(gate.findings ?? []);
     const primaryArtifact = gate.artifacts[0];
     if (!primaryArtifact) {
@@ -226,9 +257,14 @@ export function Gate({ gate, onMinimize, onClose, onResolved }: GateProps) {
                   <button
                     style={styles.moreMenuBtn}
                     onClick={() => {
+                      const targetPhase = gotoTarget - 1;
+                      const discarded = getArtifactsForPhases(sessionState, targetPhase);
+                      const artifactList = discarded.length > 0
+                        ? `\n\nArtifacts that will be archived to .clados/history/:\n${discarded.map((a) => `  • ${a}`).join('\n')}`
+                        : '';
                       setConfirmModal({
                         title: `Roll back to Gate ${gotoTarget}`,
-                        message: `Work from Gate ${gotoTarget} onward will be archived. This cannot be undone.`,
+                        message: `Work from Gate ${gotoTarget} onward will be archived. This cannot be undone.${artifactList}`,
                         quip: 'Rewinding time. If only you could undo all your other mistakes too.',
                         onConfirm: () => { setConfirmModal(null); sendGateResponse('goto', { goto_gate: gotoTarget }); },
                         variant: 'danger',
@@ -276,6 +312,18 @@ export function Gate({ gate, onMinimize, onClose, onResolved }: GateProps) {
         </div>
 
         {error && <div style={styles.error}>{error}</div>}
+
+        {externalChanges.length > 0 && (
+          <div style={{ padding: '8px 20px', background: 'var(--amber-lo, #3a3000)', borderBottom: '1px solid var(--amber-border, #665500)', display: 'flex', alignItems: 'center', gap: 8, fontSize: 12, color: 'var(--amber)' }}>
+            <span>⚠ {externalChanges.length} file{externalChanges.length === 1 ? '' : 's'} changed externally</span>
+            <button
+              style={{ marginLeft: 'auto', background: 'none', border: '1px solid var(--amber-border, #665500)', color: 'var(--amber)', padding: '2px 8px', cursor: 'pointer', fontSize: 11 }}
+              onClick={() => setExternalChanges([])}
+            >
+              Dismiss
+            </button>
+          </div>
+        )}
 
         {/* Body: doc | feedback | findings (findings hidden when empty) */}
         <div style={{ ...styles.modalBody, gridTemplateColumns: findings.length === 0 ? '1.6fr 1fr' : '1.6fr 1fr 1fr' }}>

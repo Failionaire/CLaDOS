@@ -19,18 +19,19 @@ Generate deployment infrastructure for the project. Write all files using `write
 
 **`infra/Dockerfile`** — Production Dockerfile for the backend/main service:
 ```dockerfile
-FROM node:20-alpine AS builder
+# Example for Node.js/TypeScript — adapt to {{language}} and {{container_base}}
+FROM {{container_base}} AS builder
 WORKDIR /app
 COPY package*.json ./
-RUN npm ci
+RUN {{package_manager}} install
 COPY . .
-RUN npm run build
+RUN {{package_manager}} run build
 
-FROM node:20-alpine
+FROM {{container_base}}
 RUN addgroup -S app && adduser -S app -G app
 WORKDIR /app
 COPY package*.json ./
-RUN npm ci --omit=dev
+RUN {{package_manager}} install --production
 COPY --from=builder /app/dist ./dist
 ENV NODE_ENV=production
 USER app
@@ -38,6 +39,8 @@ EXPOSE 3000
 HEALTHCHECK --interval=30s --timeout=10s CMD wget -qO- http://localhost:3000/health || exit 1
 CMD ["node", "dist/index.js"]
 ```
+
+Adapt the Dockerfile to the project's actual language and runtime. For Python projects, use pip/poetry and a WSGI/ASGI server. For Go projects, use a statically compiled binary. Read `01-architecture.md` to determine the correct build and run commands.
 
 **`infra/.env.example`** — All environment variables the application requires, with placeholder values and comments:
 ```
@@ -87,13 +90,13 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with: { node-version: '20' }
-      - run: npm ci
+      - run: {{package_manager}} install
       - name: Start test services
         run: docker compose -f infra/docker-compose.test.yml up -d
       - name: Wait for services to be healthy
         run: |
           timeout 60 bash -c 'until docker compose -f infra/docker-compose.test.yml ps | grep -q "healthy"; do sleep 2; done'
-      - run: npm test
+      - run: {{package_manager}} test
       - name: Tear down services
         if: always()
         run: docker compose -f infra/docker-compose.test.yml down

@@ -15,10 +15,15 @@ import type {
   AgentResult,
   AgentRole,
   ContextArtifact,
+  DiscoveryGateResponse,
+  DiscoveryQuestion,
   Finding,
   GateResponse,
+  MicroGateResponse,
   PhaseCheckpoint,
+  QuestionGateResponse,
   SessionState,
+  StackManifest,
   WsServerEvent,
 } from './types.js';
 import { SessionManager } from './session.js';
@@ -39,6 +44,7 @@ import {
   isSkippable,
 } from './escalation.js';
 import writeFileAtomic from 'write-file-atomic';
+import { canRequestPivot, createPivot, resolvePivot, buildMicroGateEvent, openMicroGate } from './micro-pivot.js';
 
 const CLADOS_ROOT = path.join(__dirname, '..', '..');
 const REGISTRY_PATH = path.join(CLADOS_ROOT, 'agent-registry.json');
@@ -100,6 +106,18 @@ export class Conductor {
   private budgetGateResolve: ((shouldContinue: boolean) => void) | null = null;
   private currentBudgetGateEvent: WsServerEvent | null = null;
 
+  /** Discovery gate resolver (Phase 0 two-pass flow). */
+  private discoveryGateResolve: ((response: DiscoveryGateResponse) => void) | null = null;
+  private currentDiscoveryGateEvent: WsServerEvent | null = null;
+
+  /** Question gate resolver (V2 agent questions). */
+  private questionGateResolve: ((response: QuestionGateResponse) => void) | null = null;
+  private currentQuestionGateEvent: WsServerEvent | null = null;
+
+  /** Micro-pivot gate resolver (V2 micro-pivots). */
+  private microGateResolve: ((response: MicroGateResponse) => void) | null = null;
+  private currentMicroGateEvent: WsServerEvent | null = null;
+
   /**
    * Per-agent error resolution: keyed by role.
    * Using a Map instead of a single field prevents a race condition where two
@@ -139,6 +157,15 @@ export class Conductor {
     }
     if (this.currentBudgetGateEvent && ws.readyState === 1) {
       ws.send(JSON.stringify(this.currentBudgetGateEvent));
+    }
+    if (this.currentDiscoveryGateEvent && ws.readyState === 1) {
+      ws.send(JSON.stringify(this.currentDiscoveryGateEvent));
+    }
+    if (this.currentQuestionGateEvent && ws.readyState === 1) {
+      ws.send(JSON.stringify(this.currentQuestionGateEvent));
+    }
+    if (this.currentMicroGateEvent && ws.readyState === 1) {
+      ws.send(JSON.stringify(this.currentMicroGateEvent));
     }
   }
 
@@ -187,6 +214,30 @@ export class Conductor {
       this.currentGateEvent = null;
       this.gateResolve(response);
       this.gateResolve = null;
+    }
+  }
+
+  handleDiscoveryGateResponse(response: DiscoveryGateResponse): void {
+    if (this.discoveryGateResolve) {
+      this.currentDiscoveryGateEvent = null;
+      this.discoveryGateResolve(response);
+      this.discoveryGateResolve = null;
+    }
+  }
+
+  handleQuestionGateResponse(response: QuestionGateResponse): void {
+    if (this.questionGateResolve) {
+      this.currentQuestionGateEvent = null;
+      this.questionGateResolve(response);
+      this.questionGateResolve = null;
+    }
+  }
+
+  handleMicroGateResponse(response: MicroGateResponse): void {
+    if (this.microGateResolve) {
+      this.currentMicroGateEvent = null;
+      this.microGateResolve(response);
+      this.microGateResolve = null;
     }
   }
 
@@ -283,6 +334,7 @@ export class Conductor {
 
   private async runPhase0(projectDir: string): Promise<void> {
     const state = await this.session.read(projectDir);
+    const claDosDir = path.join(projectDir, '.clados');
 
     // On crash recovery, preserve completed_agents, gate_revision_count, and
     // unresolved_streak so agents that finished aren't re-run and the escape
@@ -307,14 +359,70 @@ export class Conductor {
       },
     });
 
-    // PM: concept document
-    if (!priorCompleted.has('pm')) {
+    // V2: Two-pass discovery flow — skip if idea is >= 200 words or discovery already completed
+    const ideaWords = state.config.idea.trim().split(/\s+/).length;
+    const discoveryAlreadyDone = priorCompleted.has('pm-discovery');
+
+    if (ideaWords < 200 && !discoveryAlreadyDone) {
+      // Step 1: PM discovery pass
       await this.dispatchAgent({
         role: 'pm',
         phase: 0,
         projectDir,
         contextArtifacts: [],
-        contextPrefix: `The user's project idea:\n\n${state.config.idea}\n\nProject type: ${state.config.project_type}\n\nWrite the one-page concept document (00-concept.md) for this project.`,
+        contextPrefix: `The user's project idea:\n\n${state.config.idea}\n\nProject type: ${state.config.project_type}\n\nWrite the discovery document (00-discovery.md) with clarifying questions and default assumptions. Do NOT write the concept document yet.`,
+        errorKey: 'pm-discovery',
+      });
+
+      // Parse 00-discovery.md for questions
+      const discoveryPath = path.join(claDosDir, '00-discovery.md');
+      let discoveryContent = '';
+      if (fs.existsSync(discoveryPath)) {
+        discoveryContent = await fs.promises.readFile(discoveryPath, 'utf-8');
+      }
+
+      const { understanding, questions } = this.parseDiscoveryDoc(discoveryContent);
+
+      // Open discovery gate — wait for user answers
+      const discoveryResponse = await this.openDiscoveryGate(understanding, questions);
+
+      // Persist answers to session state
+      await this.session.update(projectDir, {
+        discovery_answers: discoveryResponse.answers,
+        discovery_additional_context: discoveryResponse.additional_context ?? undefined,
+      });
+    }
+
+    // Step 2 (or direct path if idea >= 200 words): PM writes concept doc
+    if (!priorCompleted.has('pm')) {
+      const freshState = await this.session.read(projectDir);
+      let contextPrefix = `The user's project idea:\n\n${freshState.config.idea}\n\nProject type: ${freshState.config.project_type}\n\nWrite the one-page concept document (00-concept.md) for this project.`;
+
+      // Inject discovery context if available
+      if (freshState.discovery_answers && Object.keys(freshState.discovery_answers).length > 0) {
+        const discoveryPath = path.join(claDosDir, '00-discovery.md');
+        let discoveryDoc = '';
+        if (fs.existsSync(discoveryPath)) {
+          discoveryDoc = await fs.promises.readFile(discoveryPath, 'utf-8');
+        }
+
+        const answersBlock = Object.entries(freshState.discovery_answers)
+          .map(([id, answer]) => `- ${id}: ${answer}`)
+          .join('\n');
+
+        contextPrefix += `\n\n---\n\nDiscovery document:\n${discoveryDoc}\n\nUser's answers to clarifying questions:\n${answersBlock}`;
+
+        if (freshState.discovery_additional_context) {
+          contextPrefix += `\n\nAdditional context from user:\n${freshState.discovery_additional_context}`;
+        }
+      }
+
+      await this.dispatchAgent({
+        role: 'pm',
+        phase: 0,
+        projectDir,
+        contextArtifacts: [],
+        contextPrefix,
       });
     }
 
@@ -330,6 +438,70 @@ export class Conductor {
     }
 
     await this.openGate(projectDir, 0, 1, ['00-concept.md', '00-validator.json']);
+  }
+
+  /** Parse 00-discovery.md into structured understanding + questions. */
+  private parseDiscoveryDoc(content: string): { understanding: string; questions: DiscoveryQuestion[] } {
+    const lines = content.split('\n');
+    let understanding = '';
+    const questions: DiscoveryQuestion[] = [];
+
+    let section: 'none' | 'understanding' | 'questions' | 'assumptions' = 'none';
+    const questionTexts: string[] = [];
+    const assumptions: string[] = [];
+
+    for (const line of lines) {
+      if (/^##\s+My understanding/i.test(line)) { section = 'understanding'; continue; }
+      if (/^##\s+Clarifying questions/i.test(line)) { section = 'questions'; continue; }
+      if (/^##\s+Assumptions/i.test(line)) { section = 'assumptions'; continue; }
+      if (/^##\s/.test(line)) { section = 'none'; continue; }
+      if (/^#\s/.test(line)) continue; // title
+
+      if (section === 'understanding') {
+        understanding += line + '\n';
+      } else if (section === 'questions') {
+        const match = line.match(/^\d+\.\s+(.+)/);
+        if (match?.[1]) questionTexts.push(match[1]);
+      } else if (section === 'assumptions') {
+        const match = line.match(/^\d+\.\s+(.+)/);
+        if (match?.[1]) assumptions.push(match[1]);
+      }
+    }
+
+    for (let i = 0; i < questionTexts.length; i++) {
+      const qText = questionTexts[i];
+      if (!qText) continue;
+      // Split question from rationale if parenthetical exists
+      const parenMatch = qText.match(/^(.+?)\s*\((.+)\)\s*$/);
+      questions.push({
+        id: `q-${i + 1}`,
+        question: parenMatch ? parenMatch[1]!.trim() : qText.trim(),
+        rationale: parenMatch ? parenMatch[2]!.trim() : '',
+        default_assumption: assumptions[i]?.trim() ?? '',
+      });
+    }
+
+    return { understanding: understanding.trim(), questions };
+  }
+
+  /** Open a discovery gate and wait for the user's response. */
+  private async openDiscoveryGate(
+    understanding: string,
+    questions: DiscoveryQuestion[],
+  ): Promise<DiscoveryGateResponse> {
+    const event = {
+      type: 'discovery:gate' as const,
+      phase: 0 as const,
+      understanding,
+      questions,
+    };
+    this.currentDiscoveryGateEvent = event;
+    this.broadcast(event);
+    this.logger.info('gate.discovery', `Discovery gate opened with ${questions.length} questions`);
+
+    return new Promise<DiscoveryGateResponse>((resolve) => {
+      this.discoveryGateResolve = resolve;
+    });
   }
 
   // ─── Phase 1 — Architecture ─────────────────────────────────────────────────
@@ -430,6 +602,21 @@ export class Conductor {
   private async runPhase2(projectDir: string): Promise<void> {
     const state = await this.session.read(projectDir);
     const claDosDir = path.join(projectDir, '.clados');
+
+    // V2: Read and persist stack manifest if not already loaded
+    if (!state.stack_manifest) {
+      const stackPath = path.join(claDosDir, '01-stack.json');
+      if (fs.existsSync(stackPath)) {
+        try {
+          const stackRaw = await fs.promises.readFile(stackPath, 'utf-8');
+          const stack: StackManifest = JSON.parse(stackRaw);
+          await this.session.update(projectDir, { stack_manifest: stack });
+          this.logger.info('stack.loaded', `Stack manifest loaded: ${stack.language}/${stack.backend_framework}`);
+        } catch (e) {
+          this.logger.warn('stack.parse_error', `Failed to parse 01-stack.json: ${(e as Error).message}`);
+        }
+      }
+    }
 
     // On crash recovery, preserve completed_agents, gate_revision_count, and
     // unresolved_streak so agents that finished aren't re-run and the escape
@@ -647,6 +834,22 @@ export class Conductor {
       });
     }
 
+    // Refiner (optional) — runs after Validator, fixes should_fix and suggestion findings
+    const refinerEntry = this.getRegistryEntry('refiner');
+    const refinerEnabled = isAgentEnabled(refinerEntry.enabled_when, state.config);
+    if (refinerEnabled && !priorCompleted.has('refiner')) {
+      await this.dispatchAgent({
+        role: 'refiner',
+        phase: 2,
+        projectDir,
+        contextArtifacts: [
+          { artifact: '02-build/validator.json', type: 'required' },
+        ],
+        contextPrefix: 'Fix all should_fix and suggestion findings from the Validator report. Write your change log to 02-build/refiner.json.',
+        variables: { project_type: state.config.project_type },
+      });
+    }
+
     const gateArtifacts = [
       '02-build/backend-engineer-manifest.json',
       ...(isFullStack ? ['02-build/frontend-engineer-manifest.json'] : []),
@@ -656,6 +859,7 @@ export class Conductor {
       ...(securityEnabled ? ['02-build/security-report.md'] : []),
       ...(wreckerEnabled ? ['02-build/wrecker.json'] : []),
       '02-build/validator.json',
+      ...(refinerEnabled ? ['02-build/refiner.json'] : []),
     ];
     await this.openGate(projectDir, 2, 3, gateArtifacts);
   }
@@ -1515,6 +1719,35 @@ export class Conductor {
   async dispatchAgent(config: AgentDispatchConfig): Promise<AgentResult> {
     const { role, phase, projectDir, variables, contextArtifacts, contextPrefix, modelOverride, errorKey } = config;
     const mapKey = errorKey ?? role;
+
+    // V2: Auto-inject stack manifest variables into all dispatches (phases 2-4)
+    if (phase >= 2) {
+      const stackState = await this.session.read(projectDir);
+      if (stackState.stack_manifest) {
+        const stackVars: Record<string, string> = {
+          language: stackState.stack_manifest.language,
+          backend_framework: stackState.stack_manifest.backend_framework,
+          orm: stackState.stack_manifest.orm,
+          test_runner: stackState.stack_manifest.test_runner,
+          package_manager: stackState.stack_manifest.package_manager,
+          container_base: stackState.stack_manifest.container_base,
+          runtime: stackState.stack_manifest.runtime,
+          database: stackState.stack_manifest.database,
+        };
+        config = { ...config, variables: { ...stackVars, ...variables } };
+
+        // Inject stack reference profile into context prefix
+        const stackProfilePath = path.join(CLADOS_ROOT, 'stacks', `${stackState.stack_manifest.language}.md`);
+        if (fs.existsSync(stackProfilePath)) {
+          const stackProfile = await fs.promises.readFile(stackProfilePath, 'utf-8');
+          const existing = config.contextPrefix ?? '';
+          config = {
+            ...config,
+            contextPrefix: `${existing}\n\n---\n\n## Stack Reference (${stackState.stack_manifest.language})\n\n${stackProfile}`,
+          };
+        }
+      }
+    }
     const entry = this.getRegistryEntry(role);
 
     // Throttle TPM before acquiring the semaphore
@@ -1601,6 +1834,91 @@ export class Conductor {
     }
   }
 
+  /**
+   * Dispatch an agent with V2 question detection.
+   * After the agent completes, checks if it wrote a {phase}-questions.json file.
+   * If in guided mode, opens a question gate, waits for answers, and re-dispatches.
+   * In autonomous mode, logs default answers and re-dispatches immediately.
+   */
+  async dispatchAgentWithQuestions(config: AgentDispatchConfig): Promise<AgentResult> {
+    const result = await this.dispatchAgent(config);
+    const { phase, projectDir } = config;
+    const claDosDir = path.join(projectDir, '.clados');
+
+    // Check if a questions file was written
+    const questionsPath = path.join(claDosDir, `${String(phase).padStart(2, '0')}-questions.json`);
+    if (!fs.existsSync(questionsPath)) return result;
+
+    let rawQuestions: Array<{ id: string; question: string; default_answer: string }>;
+    try {
+      const raw = await fs.promises.readFile(questionsPath, 'utf-8');
+      rawQuestions = JSON.parse(raw);
+      if (!Array.isArray(rawQuestions) || rawQuestions.length === 0) return result;
+    } catch {
+      return result;
+    }
+
+    const state = await this.session.read(projectDir);
+    const isGuided = state.config.autonomy_mode !== 'autonomous';
+    const agentQuestions: import('./types.js').AgentQuestion[] = rawQuestions.map((q) => ({
+      id: q.id,
+      agent: config.role,
+      phase,
+      question: q.question,
+      default_answer: q.default_answer,
+    }));
+
+    let answersMap: Record<string, string>;
+
+    if (isGuided) {
+      // Open question gate and wait for user
+      const event = {
+        type: 'question:gate' as const,
+        phase,
+        agent: config.errorKey ?? config.role,
+        questions: agentQuestions,
+      };
+      this.currentQuestionGateEvent = event;
+      this.broadcast(event);
+      this.logger.info('gate.question', `Question gate opened for ${config.role} phase ${phase}`);
+
+      const response = await new Promise<import('./types.js').QuestionGateResponse>((resolve) => {
+        this.questionGateResolve = resolve;
+      });
+      answersMap = response.answers;
+    } else {
+      // Autonomous: use defaults
+      answersMap = {};
+      for (const q of agentQuestions) {
+        answersMap[q.id] = q.default_answer;
+      }
+      this.logger.info('questions.auto', `Auto-answered ${agentQuestions.length} questions for ${config.role}`);
+    }
+
+    // Persist answers
+    const updatedQuestions = agentQuestions.map((q) => ({
+      ...q,
+      user_answer: answersMap[q.id] || q.default_answer,
+      answered_at: new Date().toISOString(),
+    }));
+    const existingQuestions = state.agent_questions ?? [];
+    await this.session.update(projectDir, {
+      agent_questions: [...existingQuestions, ...updatedQuestions],
+    });
+
+    // Build answers context and re-dispatch
+    const answersContext = updatedQuestions
+      .map((q) => `Q: ${q.question}\nA: ${q.user_answer}`)
+      .join('\n\n');
+
+    const redispatchConfig: AgentDispatchConfig = {
+      ...config,
+      contextPrefix: `${config.contextPrefix ?? ''}\n\n---\n\nClarifying questions and answers:\n${answersContext}\n\nProceed with your main task using these answers.`,
+    };
+
+    return this.dispatchAgent(redispatchConfig);
+  }
+
   private async dispatchWithRetry(
     config: AgentDispatchConfig,
     entry: AgentRegistryEntry,
@@ -1655,7 +1973,7 @@ export class Conductor {
       }
     };
 
-    const { resolved, compressionNeeded, fullFetchPaths } = await resolveContextArtifacts(
+    const { resolved, compressionNeeded, fullFetchPaths, budgetExhausted } = await resolveContextArtifacts(
       claDosDir,
       artifacts,
       this.anthropic,
@@ -1751,7 +2069,7 @@ export class Conductor {
       try {
         const result = await this.streamingDispatch(
           role, phase, projectDir, claDosDir, wipPath, model,
-          systemPrompt, userContent, entry, state, compressionNeeded, deniedPrefixes, errorKey, fullFetchPaths,
+          systemPrompt, userContent, entry, state, compressionNeeded, deniedPrefixes, errorKey, fullFetchPaths, budgetExhausted,
         );
         return result;
       } catch (err) {
@@ -1829,6 +2147,7 @@ export class Conductor {
     deniedPrefixes?: string[],
     errorKey?: string,
     fullFetchPaths?: string[],
+    budgetExhausted?: boolean,
   ): Promise<AgentResult> {
     const tools: Anthropic.Tool[] = this.buildToolDefinitions(entry.tools);
     const messages: Anthropic.MessageParam[] = [{ role: 'user', content: userContent }];
@@ -1922,6 +2241,87 @@ export class Conductor {
               }
             }
           }
+
+          // Micro-pivot interception: check if Engineer requested an architecture change
+          for (const block of finalMessage.content) {
+            if (block.type === 'tool_use' && block.name === 'request_architecture_change') {
+              const pivotInput = block.input as { reason: string; proposed_change: string };
+              const changeRequest = `${pivotInput.reason}\n\nProposed change: ${pivotInput.proposed_change}`;
+
+              if (!(await canRequestPivot(this.session, projectDir, phase))) {
+                // Over pivot limit — inject denial context
+                messages.push({
+                  role: 'user',
+                  content: `Architecture change denied: maximum of 3 micro-pivots per phase reached. Continue with the current architecture.`,
+                });
+                this.logger.warn('micro_pivot.limit_reached', `Phase ${phase}: ${role} hit pivot limit of 3`);
+              } else {
+                // Create pivot record
+                const pivot = await createPivot(this.session, projectDir, {
+                  phase,
+                  requestingAgent: role,
+                  changeRequest,
+                });
+
+                // Dispatch Architect to review the request
+                this.logger.info('micro_pivot.architect_dispatch', `Dispatching Architect for micro-pivot ${pivot.id}`);
+                const architectResult = await this.dispatchAgent({
+                  role: 'architect',
+                  phase,
+                  projectDir,
+                  contextArtifacts: [
+                    { artifact: '01-architecture.md', type: 'required' },
+                    { artifact: '01-api-spec.yaml', type: 'required' },
+                    { artifact: '01-schema.yaml', type: 'required' },
+                  ],
+                  contextPrefix: `The Engineer is requesting an architecture change during Build.\n\nChange request:\n${changeRequest}\n\nReview this request. If reasonable, update the architecture/schema files. Write a summary of your changes to .clados/micro-pivot-${pivot.id}.md including a unified diff of what changed.`,
+                });
+
+                // Read Architect response
+                let architectResponse = 'Architect reviewed the request.';
+                let proposedDiff = '';
+                const pivotResponsePath = path.join(projectDir, '.clados', `micro-pivot-${pivot.id}.md`);
+                if (fs.existsSync(pivotResponsePath)) {
+                  architectResponse = await fs.promises.readFile(pivotResponsePath, 'utf-8');
+                  const diffMatch = architectResponse.match(/```diff\n([\s\S]*?)```/);
+                  if (diffMatch?.[1]) proposedDiff = diffMatch[1];
+                }
+
+                // Open micro gate
+                const affectedFiles = ['01-architecture.md', '01-api-spec.yaml', '01-schema.yaml'];
+                const gateEvent = buildMicroGateEvent(pivot, architectResponse, proposedDiff, affectedFiles);
+                const response = await openMicroGate(
+                  gateEvent,
+                  this.broadcast,
+                  (resolver) => { this.microGateResolve = resolver; },
+                  (evt) => { this.currentMicroGateEvent = evt; },
+                  this.logger,
+                );
+
+                // Resolve pivot
+                await resolvePivot(this.session, projectDir, pivot.id, architectResponse, proposedDiff, response);
+
+                if (response.action === 'approve') {
+                  this.logger.info('micro_pivot.approved', `Micro-pivot ${pivot.id} approved`);
+                  // Inject updated context for the Engineer
+                  const updatedArch = fs.existsSync(path.join(projectDir, '.clados', '01-architecture.md'))
+                    ? await fs.promises.readFile(path.join(projectDir, '.clados', '01-architecture.md'), 'utf-8')
+                    : '';
+                  messages.push({
+                    role: 'user',
+                    content: `Architecture change APPROVED. The Architect has updated the architecture and schema files. Here is the updated architecture:\n\n${updatedArch}\n\nContinue building with the updated architecture.`,
+                  });
+                } else {
+                  this.logger.info('micro_pivot.rejected', `Micro-pivot ${pivot.id} rejected: ${response.rejection_reason ?? 'no reason'}`);
+                  messages.push({
+                    role: 'user',
+                    content: `Architecture change DENIED.${response.rejection_reason ? ` Reason: ${response.rejection_reason}.` : ''} Continue with the current architecture.`,
+                  });
+                }
+              }
+              break; // Only handle first pivot request per turn
+            }
+          }
         }
       }
     } finally {
@@ -1998,6 +2398,7 @@ export class Conductor {
       cost_usd: costUsd,
       context_compressed: compressionNeeded,
       full_artifacts_fetched: fullArtifactFetchCount,
+      context_budget_exhausted: budgetExhausted ?? false,
     });
 
     return {
@@ -2043,6 +2444,18 @@ export class Conductor {
           type: 'object',
           properties: { path: { type: 'string', description: 'Directory path relative to project root' } },
           required: ['path'],
+        },
+      },
+      request_architecture_change: {
+        name: 'request_architecture_change',
+        description: 'Request a change to the project architecture or schema. Use this when the current architecture cannot support a required feature. The Architect will review and propose changes for human approval.',
+        input_schema: {
+          type: 'object',
+          properties: {
+            reason: { type: 'string', description: 'Why the current architecture needs to change' },
+            proposed_change: { type: 'string', description: 'What specific change you need' },
+          },
+          required: ['reason', 'proposed_change'],
         },
       },
     };
@@ -2119,7 +2532,13 @@ export class Conductor {
             break;
           }
           default:
-            toolResult = `Unknown tool: ${block.name}`;
+            if (block.name === 'request_architecture_change') {
+              // Handled after processToolCalls returns — just acknowledge here
+              const input2 = block.input as Record<string, string>;
+              toolResult = `Architecture change request registered: "${input2['reason']}". The Conductor will pause your execution, consult the Architect, and resume you with the outcome.`;
+            } else {
+              toolResult = `Unknown tool: ${block.name}`;
+            }
         }
       } catch (err) {
         toolResult = `Error: ${(err as Error).message}`;

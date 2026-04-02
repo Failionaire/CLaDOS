@@ -48,6 +48,8 @@ export interface SessionConfig {
   wrecker_enabled: boolean;
   is_high_complexity: boolean;
   spend_cap: number | null;
+  autonomy_mode?: 'guided' | 'autonomous';
+  refiner_enabled?: boolean;
 }
 
 export interface AgentTokenRecord {
@@ -76,9 +78,21 @@ export interface SessionState {
     decision: string;
     timestamp: string;
   }>;
+  conductor_reasoning?: Array<{
+    phase: number;
+    context_summary: string;
+    question: string;
+    response: string;
+    timestamp: string;
+  }>;
   dependency_divergences: string[];
   validator_tier: 'sonnet' | 'opus';
   artifacts: Record<string, { path: string; token_count: number; version: number; created_at?: string; agent?: string }>;
+  discovery_answers?: Record<string, string>;
+  discovery_additional_context?: string;
+  agent_questions?: AgentQuestion[];
+  micro_pivots?: MicroPivot[];
+  stack_manifest?: StackManifest;
 }
 
 // WebSocket event types
@@ -109,6 +123,8 @@ export interface WsAgentDone {
   context_compressed: boolean;
   /** Number of full artifacts the agent fetched via read_file during a compressed-context run. */
   full_artifacts_fetched: number;
+  /** True when the summarizer budget cap was hit during context resolution — agent had truncated context. */
+  context_budget_exhausted?: boolean;
 }
 
 export interface WsAgentError {
@@ -172,7 +188,93 @@ export type WsEvent =
   | WsGateOpen
   | WsBudgetGate
   | WsContextCompressed
-  | WsStateSnapshot;
+  | WsStateSnapshot
+  | WsDiscoveryGateOpen
+  | WsQuestionGateOpen
+  | WsMicroGateOpen;
+
+// ─── V2 types ─────────────────────────────────────────────────────────────────
+
+export interface DiscoveryQuestion {
+  id: string;
+  question: string;
+  rationale: string;
+  default_assumption: string;
+}
+
+export interface WsDiscoveryGateOpen {
+  type: 'discovery:gate';
+  phase: 0;
+  understanding: string;
+  questions: DiscoveryQuestion[];
+}
+
+export interface DiscoveryGateResponse {
+  answers: Record<string, string>;
+  additional_context?: string;
+}
+
+export interface AgentQuestion {
+  id: string;
+  agent: string;
+  phase: number;
+  question: string;
+  default_answer: string;
+  user_answer?: string;
+  answered_at?: string;
+}
+
+export interface WsQuestionGateOpen {
+  type: 'question:gate';
+  phase: number;
+  agent: string;
+  questions: AgentQuestion[];
+}
+
+export interface QuestionGateResponse {
+  answers: Record<string, string>;
+}
+
+export interface MicroPivot {
+  id: string;
+  phase: number;
+  requesting_agent: string;
+  change_request: string;
+  architect_response?: string;
+  architect_diff?: string;
+  user_decision?: 'approved' | 'rejected';
+  rejection_reason?: string;
+  timestamp: string;
+}
+
+export interface WsMicroGateOpen {
+  type: 'micro:gate';
+  pivot_id: string;
+  phase: number;
+  requesting_agent: string;
+  change_request: string;
+  architect_response: string;
+  proposed_diff: string;
+  affected_files: string[];
+}
+
+export interface MicroGateResponse {
+  action: 'approve' | 'reject';
+  rejection_reason?: string;
+}
+
+export interface StackManifest {
+  language: string;
+  runtime: string;
+  backend_framework: string;
+  orm: string;
+  database: string;
+  test_runner: string;
+  test_integration: string;
+  package_manager: string;
+  ci_platform: string;
+  container_base: string;
+}
 
 // AgentStatus tracks per-agent UI state derived from WS events
 export type AgentCardStatus = 'pending' | 'running' | 'retrying' | 'done' | 'flagged' | 'error' | 'skipped';
@@ -191,6 +293,7 @@ export interface AgentCardState {
   errorMessage: string | null;
   errorType?: string;
   contextCompressed: boolean;
+  contextBudgetExhausted: boolean;
   fullArtifactsFetched: number;
   isSkippable: boolean;
   errorKey?: string;

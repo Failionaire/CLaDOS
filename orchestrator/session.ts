@@ -1,5 +1,6 @@
 import fs from 'fs';
 import path from 'path';
+import crypto from 'crypto';
 import { v4 as uuidv4 } from 'uuid';
 import writeFileAtomic from 'write-file-atomic';
 import type {
@@ -260,6 +261,10 @@ export class SessionManager {
   private async write(projectDir: string, state: SessionState): Promise<void> {
     const statePath = this.statePath(projectDir);
     await fs.promises.mkdir(path.dirname(statePath), { recursive: true });
-    await writeFileAtomic(statePath, JSON.stringify(state, null, 2), { encoding: 'utf8' });
+    const json = JSON.stringify(state, null, 2);
+    await writeFileAtomic(statePath, json, { encoding: 'utf8' });
+    // Write companion checksum file for integrity verification
+    const checksum = crypto.createHash('sha256').update(json).digest('hex');
+    await writeFileAtomic(statePath + '.sha256', checksum, { encoding: 'utf8' });
   }
 }

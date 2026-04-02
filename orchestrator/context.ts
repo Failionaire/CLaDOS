@@ -20,6 +20,10 @@ export function initContextModels(tokenCounter: string, summarizer: string): voi
 // Lazily initialised — tree-sitter requires a native addon compile; skip gracefully if unavailable.
 let _tsParser: TsParser | null = null;
 let _tsParserAttempted = false;
+let _pyParser: TsParser | null = null;
+let _pyParserAttempted = false;
+let _goParser: TsParser | null = null;
+let _goParserAttempted = false;
 
 function getTypeScriptParser(): TsParser | null {
   if (_tsParserAttempted) return _tsParser;
@@ -38,6 +42,58 @@ function getTypeScriptParser(): TsParser | null {
   }
 }
 
+function getPythonParser(): TsParser | null {
+  if (_pyParserAttempted) return _pyParser;
+  _pyParserAttempted = true;
+  try {
+    const Parser = require('tree-sitter') as { new(): TsParser };
+    const Python = require('tree-sitter-python') as unknown;
+    const parser = new Parser();
+    parser.setLanguage(Python);
+    _pyParser = parser;
+    return _pyParser;
+  } catch {
+    return null;
+  }
+}
+
+function getGoParser(): TsParser | null {
+  if (_goParserAttempted) return _goParser;
+  _goParserAttempted = true;
+  try {
+    const Parser = require('tree-sitter') as { new(): TsParser };
+    const Go = require('tree-sitter-go') as unknown;
+    const parser = new Parser();
+    parser.setLanguage(Go);
+    _goParser = parser;
+    return _goParser;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Select the appropriate tree-sitter parser based on file extension.
+ * Returns null if no grammar is available for the extension.
+ */
+export function getParserForExtension(ext: string): TsParser | null {
+  switch (ext.toLowerCase()) {
+    case '.ts':
+    case '.tsx':
+    case '.js':
+    case '.jsx':
+    case '.mts':
+    case '.mjs':
+      return getTypeScriptParser();
+    case '.py':
+      return getPythonParser();
+    case '.go':
+      return getGoParser();
+    default:
+      return null;
+  }
+}
+
 interface TsNode {
   type: string;
   text: string;
@@ -51,6 +107,33 @@ interface TsParser {
 }
 
 // ─── Two-Tier AST/LSP extraction (#7) ─────────────────────────────────────────
+
+/**
+ * Extract exported declarations from a source file.
+ * Selects extraction strategy based on file extension:
+ *   - .ts/.tsx/.js/.jsx: TypeScript compiler API → tree-sitter fallback
+ *   - .py: tree-sitter-python → raw content fallback
+ *   - .go: tree-sitter-go → raw content fallback
+ *   - Other: raw content (first 30 lines)
+ */
+export function extractExportsForFile(content: string, filePath: string): string {
+  const ext = path.extname(filePath).toLowerCase();
+  switch (ext) {
+    case '.ts':
+    case '.tsx':
+    case '.js':
+    case '.jsx':
+    case '.mts':
+    case '.mjs':
+      return extractTypeScriptExports(content);
+    case '.py':
+      return extractPythonExports(content);
+    case '.go':
+      return extractGoExports(content);
+    default:
+      return rawFallback(content);
+  }
+}
 
 /**
  * Extract exported declarations from a TypeScript file.
@@ -128,6 +211,63 @@ function extractWithTreeSitter(content: string): string {
   } catch {
     return '';
   }
+}
+
+/**
+ * Extract top-level definitions from a Python file using tree-sitter-python.
+ * Captures class definitions, function definitions, and top-level assignments.
+ */
+function extractPythonExports(content: string): string {
+  const parser = getPythonParser();
+  if (!parser) return rawFallback(content);
+  try {
+    const tree = parser.parse(content);
+    const exports: string[] = [];
+
+    for (const child of tree.rootNode.children) {
+      if (child.type === 'function_definition' || child.type === 'class_definition' || child.type === 'decorated_definition') {
+        const firstLine = child.text.split('\n')[0]?.trim() ?? '';
+        if (firstLine) exports.push(firstLine.slice(0, 140));
+      }
+    }
+
+    return exports.slice(0, 30).join('\n') || rawFallback(content);
+  } catch {
+    return rawFallback(content);
+  }
+}
+
+/**
+ * Extract top-level exported declarations from a Go file using tree-sitter-go.
+ * Captures functions, types, and vars that start with an uppercase letter (Go export convention).
+ */
+function extractGoExports(content: string): string {
+  const parser = getGoParser();
+  if (!parser) return rawFallback(content);
+  try {
+    const tree = parser.parse(content);
+    const exports: string[] = [];
+
+    for (const child of tree.rootNode.children) {
+      if (child.type === 'function_declaration' || child.type === 'method_declaration' ||
+          child.type === 'type_declaration' || child.type === 'var_declaration') {
+        const firstLine = child.text.split('\n')[0]?.trim() ?? '';
+        // Go exports start with uppercase
+        if (firstLine && /^(func|type|var)\s+[A-Z]/.test(firstLine)) {
+          exports.push(firstLine.slice(0, 140));
+        }
+      }
+    }
+
+    return exports.slice(0, 30).join('\n') || rawFallback(content);
+  } catch {
+    return rawFallback(content);
+  }
+}
+
+/** Fallback: return the first 30 non-empty lines of raw content. */
+function rawFallback(content: string): string {
+  return content.split('\n').filter(l => l.trim()).slice(0, 30).join('\n');
 }
 
 const TOKEN_FALLBACK_CHARS_PER_TOKEN = 3.5;
@@ -249,6 +389,7 @@ export async function resolveContextArtifacts(
   resolved: ResolvedArtifact[];
   compressionNeeded: boolean;
   fullFetchPaths: string[];
+  budgetExhausted: boolean;
 }> {
   type LoadedArtifact = ContextArtifact & { content: string; tokenCount: number };
 
@@ -285,6 +426,7 @@ export async function resolveContextArtifacts(
       })),
       compressionNeeded: false,
       fullFetchPaths: [],
+      budgetExhausted: false,
     };
   }
 
@@ -293,6 +435,7 @@ export async function resolveContextArtifacts(
   // Pass 1: downgrade reference → Haiku summary (or compressed preview if budget cap hit)
   const resolved: ResolvedArtifact[] = [];
   totalTokens = 0;
+  let budgetExhausted = false;
 
   // Haiku prices for budget estimation: $0.80 input / $4.00 output per 1M tokens
   const HAIKU_INPUT_PRICE_PER_M = 0.80;
@@ -316,6 +459,7 @@ export async function resolveContextArtifacts(
         resolved.push({ key: a.artifact, content: summary, tokenCount: summaryTokens, compressed: true });
         totalTokens += summaryTokens;
       } else {
+        budgetExhausted = true;
         logger.warn('context.summarizer_cap', `Summarizer budget cap reached for ${a.artifact} — using truncation`);
         const compressed = compressToPreview(a.artifact, a.content);
         resolved.push({ key: a.artifact, content: compressed, tokenCount: COMPRESSED_TOKEN_ESTIMATE, compressed: true });
@@ -328,7 +472,7 @@ export async function resolveContextArtifacts(
   }
 
   if (totalTokens <= CONTEXT_TOKEN_LIMIT) {
-    return { resolved, compressionNeeded: true, fullFetchPaths: [] };
+    return { resolved, compressionNeeded: true, fullFetchPaths: [], budgetExhausted };
   }
 
   // Pass 2: downgrade required → Haiku summary + grant read_file access (#11: use summarizeFile, not truncation)
@@ -351,6 +495,7 @@ export async function resolveContextArtifacts(
         summaryContent = `${prose}\n[Full content available via read_file: ${a.key}]`;
         onSummarizerCost?.(projectedCost);
       } else {
+        budgetExhausted = true;
         summaryContent = `${compressToPreview(a.key, originalContent)}\n[Full content available via read_file: ${a.key}]`;
       }
       onDowngradeLog?.(a.key, 'required_to_summary');
@@ -364,7 +509,7 @@ export async function resolveContextArtifacts(
     }
   }
 
-  return { resolved: resolved2, compressionNeeded: true, fullFetchPaths };
+  return { resolved: resolved2, compressionNeeded: true, fullFetchPaths, budgetExhausted };
 }
 
 /**

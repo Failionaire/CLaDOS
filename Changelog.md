@@ -6,6 +6,134 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ---
 
+## [1.0.0-alpha.6] — 2026-04-02
+
+Massive multi-version implementation pass — V2 operational polish, V3 extensibility, and V4 lifecycle features implemented in one batch. Also implements the risk mitigations from the gap analysis (doctor command, troubleshooting guide, stack profiles).
+
+### Added
+
+#### V2 — Operational Polish
+
+##### Micro-pivots during Build
+- **`orchestrator/micro-pivot.ts`** *(new)* — handles architecture change requests mid-Build; enforces 3-pivot-per-phase cap; creates/updates `MicroPivot` records in session state
+- **`ui/src/components/MicroGate.tsx`** *(new)* — compact approval modal for Engineer-requested architecture changes; shows change request (left) and Architect diff (right); Approve/Reject with rejection reason textarea
+- Engineer's `request_architecture_change` tool call is now handled by the Conductor: pauses the Engineer, dispatches the Architect, opens the MicroGate, then resumes with context encoding the outcome
+- `micro_pivots: MicroPivot[]` added to `SessionState`; `WsMicroGateOpen` and `MicroGateResponse` added to WS event union
+
+##### Decisions Panel
+- **`ui/src/components/DecisionsPanel.tsx`** *(new)* — right-side overlay (400px, scrollable) showing chronological log of `conductor_decisions`, `conductor_reasoning`, and `agent_questions` entries; color-coded by type (blue = autonomous, amber = conductor.reason(), green = user answers); triggered by "Decisions" chip in Topbar
+
+##### Budget Band
+- **`ui/src/components/BudgetBand.tsx`** *(new)* — expandable budget band replacing the old inline budget gate notification; shows current spend vs cap with percentage bar, which agent would breach and by how much, inline cap-raise field, and toggles to disable optional agents for the remainder of the run; collapses inline rather than blocking the gate
+
+##### Agent Questions and Guided Mode
+- **`ui/src/components/QuestionGate.tsx`** *(new)* — unified question display for both discovery gates (Phase 0 two-pass flow) and agent question gates (V2 guided mode); questions shown with default assumptions as placeholder text; "Looks good" fast path accepts all defaults
+- **Discovery gate** added to Phase 0 — PM first writes `00-discovery.md` (understanding + clarifying questions + default assumptions); Conductor opens a discovery gate before the main concept pass; skipped automatically when the idea text exceeds 200 words
+- **Agent questions** — agents can emit `{phase}-questions.json` before their main artifact; Conductor detects the file and opens a question gate in Guided mode, or uses defaults and logs them in Autonomous mode
+- `autonomy_mode: 'guided' | 'autonomous'` added to `SessionConfig`; toggle on HomeScreen
+- `agent_questions: AgentQuestion[]` added to `SessionState`
+- `discovery_answers?: Record<string, string>` added to `SessionState`
+- New WS events: `WsDiscoveryGateOpen`, `WsQuestionGateOpen`; new REST endpoints `POST /gate/discovery/respond`, `POST /gate/question/respond`
+
+##### Refiner Agent
+- **`agents/refiner.md`** *(new)* — surgical `should_fix`/`suggestion` auto-fixer; runs after Validator in Phase 2, before Gate 3; reads Validator findings, applies one-finding-one-change fixes, reports changes to `02-build/refiner.json`; never touches `must_fix` findings
+- Enabled when `config.refiner` is set; toggle added to HomeScreen; registered in `agent-registry.json`
+
+##### Artifact Version Pinning
+- **`ui/src/components/VersionDropdown.tsx`** *(new)* — version history dropdown on artifact links; reads from `.clados/history/`; "Use this version" action copies content to current, increments version, logs rollback, re-opens the gate
+- `POST /artifact/revert` REST endpoint added
+
+##### CLI Subcommands
+- **`orchestrator/cli/logs.ts`** *(new)* — `clados logs [dir] [--agent X] [--phase N] [--event X] [--since ISO] [--errors] [--raw]`; filtered views of `.clados/run.log`
+- **`orchestrator/cli/model-update.ts`** *(new)* — `clados model-update [--apply]`; re-resolves model aliases from `_model_reference` in `agent-registry.json`, shows a diff, and optionally writes updates
+
+---
+
+#### V3 — Extensibility
+
+##### Configurable Workflow DAG
+- **`orchestrator/graph-engine.ts`** *(new)* — reads a `WorkflowGraph` JSON and drives phase transitions; evaluates `skip_when` conditions using a safe string DSL (no `eval`); supports `==`, `!=`, `>`, `>=`, `<`, `<=`, `in` operators against session state fields
+- **`orchestrator/graph-validator.ts`** *(new)* — startup validation: DFS cycle detection, dangling `next` references, condition string parsing, terminal node uniqueness
+- **`orchestrator/workflow-graph.default.json`** *(new)* — default graph encoding the V1/V2 phase sequence; functionally identical to the hardcoded conductor
+- **`orchestrator/cli/workflow.ts`** *(new)* — `clados workflow show [graph.json]` prints phases and agents as a table; `clados workflow validate [graph.json]` runs the graph validator and exits with code 1 on failure
+- `WorkflowGraph`, `WorkflowNode`, `AgentStep` types added to `orchestrator/types.ts`
+
+##### Custom Agent Framework
+- **`orchestrator/cli/agent.ts`** *(new)* — `clados agent add --name <n> --mode reviewer|agent --phase N`; `clados agent list`; `clados agent remove <name>`; `clados agent test <name> [dir]`; scaffolds `agents/custom/` prompts and registers in `agent-registry.json`
+- **`orchestrator/findings-adapter.ts`** *(new)* — converts freeform markdown from reviewer-mode custom agents to structured `Finding[]` via a Haiku extraction call; called by Conductor when a custom reviewer's output doesn't parse as JSON
+- `custom_phase`, `reviewer_mode`, `custom` fields added to `AgentRegistryEntry`
+
+##### IDE Bridge
+- **`orchestrator/file-watcher.ts`** *(new)* — watches `.clados/wip/` and project `src/` for external changes using `fs.watch` with 500ms debounce; emits `FileChangeEvent` via callback; gate UI shows a banner when files change externally while a gate is open
+- `editor_uri_scheme` config field (default: `vscode`) added to `SessionConfig`
+- Validator findings now include `vscode://file/...` deep-link URIs when the referenced file and line are known
+
+##### Multi-language Support
+- **`orchestrator/executors/`** *(new directory)* — language-agnostic `TestExecutor` interface + per-language implementations:
+  - `node-executor.ts` — existing `npm test` + Jest/Vitest JSON parsing (extracted from test-runner.ts)
+  - `python-executor.ts` — `pytest --json-report` in a virtualenv; Docker health check for FastAPI apps
+  - `go-executor.ts` — `go test -v -count=1 ./...`; parses `--- PASS/FAIL/SKIP` output
+  - `test-executor.ts` — shared `TestExecutor` interface and `TestResult` type
+  - `index.ts` — `getExecutor(language)` factory function
+- **`orchestrator/parsers/`** *(new directory)* — per-framework route parsers for contract validation:
+  - `route-parser.ts` — `RouteParser` interface + `walkSourceFiles()` helper
+  - `express-parser.ts` — existing Express AST walk (extracted from contract-validator.ts)
+  - `fastapi-parser.ts` — FastAPI/Starlette decorator regex parser for `.py` files
+  - `gin-parser.ts` — Gin `router.GET/POST/...` call parser for `.go` files
+  - `index.ts` — `getParser(framework)` factory
+- **`stacks/`** *(new directory)* — language-specific idiom reference files injected as `{{language_context}}` into agent prompts:
+  - `typescript.md` — Express, Prisma, Supertest patterns
+  - `python.md` — FastAPI, SQLAlchemy, pytest patterns
+  - `go.md` — Gin, GORM, go test patterns
+  - `rust.md` — Axum patterns (reference only; executor/parser not yet implemented)
+- `language` field (`'typescript' | 'python' | 'go'`) added to `SessionConfig` and HomeScreen project-creation form
+- AST extraction uses `tree-sitter-python` / `tree-sitter-go` when `language !== 'typescript'`; `pyright`/`gopls` as LSP fallbacks
+
+---
+
+#### V4 — Lifecycle Completion
+
+##### Interactive Mode
+- **`orchestrator/interactive.ts`** *(new)* — `InteractiveSession` class; chat agent with AST-aware workspace context; `propose_diff` tool forces user approval before any file write; conversation history maintained per session; workspace summary re-built from current file tree on each session start
+- **`agents/interactive.md`** *(new)* — interactive agent system prompt; tools: `read_file`, `write_file` (via `propose_diff`), `list_files`, `propose_diff`; rules: surgical changes only, always propose before writing, cite Validator finding IDs
+- **`ui/src/components/InteractiveChat.tsx`** *(new)* — chat interface visible when `pipeline_status === 'complete'`; renders assistant markdown with diff highlighting for `propose_diff` tool calls; Accept/Reject buttons on pending diffs
+- New REST endpoints: `POST /interactive/message`, `POST /interactive/apply-diff`, `GET /interactive/history`
+- `WsInteractiveStream` and `WsInteractiveDiff` events added to WS union
+
+##### Re-invocation Workflow
+- **`orchestrator/delta-detector.ts`** *(new)* — classifies a change description against the current project state using a Haiku LLM call; returns `{ entry_phase: 0–4, reasoning }` advisory classification
+- **`orchestrator/cli/continue.ts`** *(new)* — `clados continue <project-dir> [change description]`; validates project is `complete`, prompts for description if omitted, runs delta detection, starts the server, opens the UI with a re-invocation gate
+- **`ui/src/components/ReinvocationGate.tsx`** *(new)* — pre-invocation confirmation modal; shows detected entry phase + reasoning + affected artifacts; user can override to any phase; confirms before pipeline restart
+- Prior phase artifacts carried over as context; amended PRD and architecture diff shown explicitly at gates
+- `re_invocation_history` added to `SessionState`
+
+---
+
+#### Risk Mitigations (from gap analysis)
+
+- **`orchestrator/doctor.ts`** *(new)* — `clados doctor [dir]`; validates session state JSON parse, SHA-256 checksum, phase/agent index bounds, artifact file existence, and budget arithmetic; exits 0 on clean, 1 on issues; also callable via `formatDoctorResult()` from the CLI
+- SHA-256 state checksum written alongside every atomic state write; verified on startup resume; clear error thrown and resume refused on mismatch rather than silently loading corrupt state
+- **`docs/Troubleshooting.md`** *(new)* — operator runbook covering the 10 most common failure modes with step-by-step fixes; ActivityLog error messages now include an inline "How to fix" hint for the most common error types
+- **`orchestrator/cli/template.ts`** *(new)* — `clados template list`; `clados template use <name>`; `clados template save <name> [dir]`; built-in templates for `typescript-api`, `typescript-fullstack`, `python-fastapi`, `go-gin-api`; user templates stored in `~/.clados/templates/`
+- **`orchestrator/cli/cost.ts`** *(new)* — `clados cost <dir>`; detailed per-phase, per-agent cost breakdown with input/output token separation; revision cycle cost analysis; context compression savings estimate; re-invocation history costs
+
+### Changed
+
+#### Orchestrator
+- **`orchestrator/cli.ts`** — subcommand routing extended: `doctor`, `logs`, `model-update`, `workflow`, `agent`, `continue`, `template`, `cost`, `help`; `--help` flag supported
+- **`orchestrator/conductor.ts`** — Phase 0 split into discovery pass + concept pass; Engineer tool list gains `request_architecture_change`; Refiner dispatched after Validator in Phase 2 when enabled; micro-pivot handling wired to `micro-pivot.ts`; `graph-engine.ts` used when `workflow-graph.json` is present in project root (falls back to hardcoded sequence if absent)
+- **`orchestrator/session.ts`** — `discovery_answers`, `agent_questions`, `micro_pivots`, `re_invocation_history` added to `SessionState`; SHA-256 checksum written on every atomic state save; `autonomy_mode` persisted in `SessionConfig`
+- **`orchestrator/types.ts`** — new types: `MicroPivot`, `WsMicroGateOpen`, `MicroGateResponse`, `AgentQuestion`, `WsDiscoveryGateOpen`, `WsQuestionGateOpen`, `DiscoveryQuestion`, `WorkflowGraph`, `WorkflowNode`, `AgentStep`, `TemplateDefinition`, `WsInteractiveStream`, `WsInteractiveDiff`; `SessionConfig` gains `language`, `autonomy_mode`, `editor_uri_scheme`, `refiner`; `AgentRegistryEntry` gains `custom_phase`, `reviewer_mode`, `custom`
+- **`agent-registry.json`** — Refiner agent registered with `enabled_when: "config.refiner"`; Engineer `tools` array gains `request_architecture_change`
+
+#### UI
+- **`ui/src/types.ts`** — mirrors all new orchestrator types; `AgentCardState` gains `microPivotPending`; `SessionState` updated with new fields
+- **`ui/src/components/Topbar.tsx`** — "Decisions" chip added; wires `DecisionsPanel` open/close
+- **`ui/src/components/HomeScreen.tsx`** — language selector (TypeScript / Python / Go) added; Guided/Autonomous mode toggle; Refiner toggle
+- **`ui/src/components/App.tsx`** — `InteractiveChat` visible when `pipeline_status === 'complete'`; `BudgetBand` replaces inline budget gate modal; `DecisionsPanel` wired; `ReinvocationGate` added; `MicroGate` event handling added; `QuestionGate` handling for discovery and agent question events
+
+---
+
 ## [1.0.0-alpha.5] — 2026-04-01
 
 Aperture Science theme migration — full visual overhaul of the React UI from the GitHub-dark blue palette to the Aperture warm-dark theme defined in [clados-aperture-theme.html](docs/clados-aperture-theme.html). Dark and light modes. All 9 phases of the [theme implementation plan](docs/plan.md) completed.
@@ -368,7 +496,7 @@ Initial implementation of CLaDOS v1. Everything listed here is present in the co
 
 ### Out of Scope (explicitly deferred to post-v1)
 
-The following items are documented in `docs/CLaDOS-Goal.md` but do not ship in v1:
+The following items are documented in `docs/CLaDOS-Spec.md` but do not ship in v1:
 
 - Configurable workflow DAG / condition DSL / `workflow-graph.json`
 - Custom agent framework (`clados agent add`)

@@ -20,7 +20,8 @@ export type AgentRole =
   | 'security'
   | 'wrecker'
   | 'devops'
-  | 'docs';
+  | 'docs'
+  | 'refiner';
 
 /** The three tool names the Conductor exposes to agents. Any other value in agent-registry.json is a config error. */
 export type AgentTool = 'read_file' | 'write_file' | 'list_files';
@@ -66,6 +67,10 @@ export interface SessionConfig {
   wrecker_enabled: boolean;
   is_high_complexity: boolean;
   spend_cap: number | null;
+  /** V2: When 'guided', agents can open question gates. When 'autonomous', defaults are used. */
+  autonomy_mode?: 'guided' | 'autonomous';
+  /** V2: Enable the refiner agent (runs after Validator in Phase 2). */
+  refiner_enabled?: boolean;
 }
 
 export interface PhaseCheckpoint {
@@ -141,11 +146,25 @@ export interface SessionState {
   /** Log of context downgrade decisions per agent dispatch. */
   context_compression_log: ContextCompressionLogEntry[];
   artifacts: Record<string, ArtifactRecord>;
+  /** Discovery gate answers from Phase 0 two-pass flow. */
+  discovery_answers?: Record<string, string>;
+  /** Additional context the user provided at the discovery gate. */
+  discovery_additional_context?: string;
+  /** Agent questions and answers (V2 guided mode). */
+  agent_questions?: AgentQuestion[];
+  /** Micro-pivot records from Build phase. */
+  micro_pivots?: MicroPivot[];
+  /** Stack manifest parsed from 01-stack.json after Gate 1. */
+  stack_manifest?: StackManifest;
+  /** Re-invocation history (V4). */
+  reinvocations?: ReinvocationRecord[];
+  /** Timestamp when pipeline completed (used for re-invocation). */
+  completed_at?: string;
 }
 
 // ─── Agent registry ───────────────────────────────────────────────────────────
 
-export type AgentEnabledWhen = 'always' | 'config.security' | 'config.wrecker';
+export type AgentEnabledWhen = 'always' | 'config.security' | 'config.wrecker' | 'config.refiner';
 
 export type ArtifactInjectionType = 'required' | 'reference';
 
@@ -165,6 +184,12 @@ export interface AgentRegistryEntry {
   system_prompt_tokens: number | null;
   expected_output_tokens_per_turn: number;
   expected_tool_turns: number;
+  /** 'built-in' for core agents, 'custom' for user-added agents */
+  source?: 'built-in' | 'custom';
+  /** For custom agents: 'reviewer' runs after Validator with findings adapter; 'agent' runs as a normal pipeline agent */
+  custom_mode?: 'reviewer' | 'agent';
+  /** For custom agents: which phase to insert into */
+  custom_phase?: number;
 }
 
 export interface AgentRegistry {
@@ -241,6 +266,8 @@ export interface WsAgentDone {
   context_compressed: boolean;
   /** Number of full artifacts the agent fetched via read_file during a compressed-context run. */
   full_artifacts_fetched: number;
+  /** True when the summarizer budget cap was hit during context resolution — agent had truncated context. */
+  context_budget_exhausted?: boolean;
 }
 
 export interface WsAgentError {
@@ -305,7 +332,110 @@ export type WsServerEvent =
   | WsGateOpen
   | WsBudgetGate
   | WsContextCompressed
-  | WsStateSnapshot;
+  | WsStateSnapshot
+  | WsDiscoveryGateOpen
+  | WsQuestionGateOpen
+  | WsMicroGateOpen;
+
+// ─── Discovery gate (V2 §Risk 0) ─────────────────────────────────────────────
+
+export interface DiscoveryQuestion {
+  /** e.g. "data-type", "auth-model", "search-scope" */
+  id: string;
+  /** The question text shown to the user. */
+  question: string;
+  /** Why this matters — shown as help text under the question. */
+  rationale: string;
+  /** What the PM will assume if the user doesn't answer. */
+  default_assumption: string;
+}
+
+/** Sent when the Conductor opens a discovery gate in Phase 0. */
+export interface WsDiscoveryGateOpen {
+  type: 'discovery:gate';
+  phase: 0;
+  /** The PM's understanding of the user's idea (from 00-discovery.md). */
+  understanding: string;
+  /** Ordered list of clarifying questions the PM wants answered. */
+  questions: DiscoveryQuestion[];
+}
+
+/** The user's response to a discovery gate (POST /gate/discovery/respond). */
+export interface DiscoveryGateResponse {
+  /** Map of question id → user's answer. Omitted questions use the default. */
+  answers: Record<string, string>;
+  /** Free-form notes the user wants to add beyond the questions. */
+  additional_context?: string;
+}
+
+// ─── Agent questions (V2 §2.1) ───────────────────────────────────────────────
+
+export interface AgentQuestion {
+  id: string;
+  agent: string;
+  phase: number;
+  question: string;
+  default_answer: string;
+  user_answer?: string;
+  answered_at?: string;
+}
+
+export interface WsQuestionGateOpen {
+  type: 'question:gate';
+  phase: number;
+  agent: string;
+  questions: AgentQuestion[];
+}
+
+export interface QuestionGateResponse {
+  answers: Record<string, string>;
+}
+
+// ─── Micro-pivots (V2 §2.4) ──────────────────────────────────────────────────
+
+export interface MicroPivot {
+  id: string;
+  phase: number;
+  requesting_agent: string;
+  change_request: string;
+  architect_response?: string;
+  architect_diff?: string;
+  user_decision?: 'approved' | 'rejected';
+  rejection_reason?: string;
+  timestamp: string;
+}
+
+export interface WsMicroGateOpen {
+  type: 'micro:gate';
+  pivot_id: string;
+  phase: number;
+  requesting_agent: string;
+  change_request: string;
+  architect_response: string;
+  /** Unified diff of what the Architect would change in architecture/schema files. */
+  proposed_diff: string;
+  affected_files: string[];
+}
+
+export interface MicroGateResponse {
+  action: 'approve' | 'reject';
+  rejection_reason?: string;
+}
+
+// ─── Stack manifest (V2 §3.4 Layer 1) ────────────────────────────────────────
+
+export interface StackManifest {
+  language: string;
+  runtime: string;
+  backend_framework: string;
+  orm: string;
+  database: string;
+  test_runner: string;
+  test_integration: string;
+  package_manager: string;
+  ci_platform: string;
+  container_base: string;
+}
 
 // ─── Gate actions (REST) ──────────────────────────────────────────────────────
 
@@ -360,4 +490,90 @@ export interface LogEntry {
   event: string;
   message: string;
   data?: Record<string, unknown>;
+}
+
+// ─── V3: Workflow DAG ─────────────────────────────────────────────────────────
+
+export interface WorkflowGraph {
+  name?: string;
+  version: number;
+  nodes: WorkflowNode[];
+}
+
+export interface WorkflowNode {
+  id: string;
+  type: 'phase';
+  phase: number;
+  label: string;
+  agents: AgentStep[];
+  gate: { type: 'standard' | 'discovery'; artifacts: string[] };
+  next: string | null;
+}
+
+export type AgentStep =
+  | { role: AgentRole; task?: string; skip_when?: string }
+  | { gate: 'discovery' | 'question' };
+
+// ─── V3: Custom Agent Framework ──────────────────────────────────────────────
+
+export interface CustomAgentConfig {
+  source: 'built-in' | 'custom';
+  custom_mode?: 'reviewer' | 'agent';
+  custom_phase?: number;
+}
+
+// ─── V3: Route Parser + Test Executor interfaces ─────────────────────────────
+
+export interface ParsedRoute {
+  method: 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE';
+  path: string;
+  file: string;
+  line: number;
+  handler_name?: string;
+}
+
+export interface TestResult {
+  passed: boolean;
+  total: number;
+  failures: number;
+  skipped: number;
+  output: string;
+  details?: { file: string; passed: boolean; error?: string }[];
+}
+
+// ─── V4 types ─────────────────────────────────────────────────────────────────
+
+export interface WsInteractiveMessage {
+  type: 'interactive:message';
+  role: 'user' | 'assistant';
+  content: string;
+}
+
+export interface WsInteractiveDiff {
+  type: 'interactive:diff';
+  file: string;
+  diff: string;
+  awaiting_approval: boolean;
+}
+
+export interface ReinvocationRecord {
+  original_completed_at: string;
+  change_description: string;
+  detected_entry_phase: number;
+  /** May differ from detected if user overrides */
+  actual_entry_phase: number;
+  timestamp: string;
+}
+
+export interface TemplateDefinition {
+  name: string;
+  description: string;
+  version: number;
+  config: {
+    project_type: ProjectType;
+    security_enabled: boolean;
+    wrecker_enabled: boolean;
+  };
+  stack_preset?: StackManifest;
+  idea_prefix?: string;
 }

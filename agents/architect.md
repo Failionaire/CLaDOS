@@ -25,10 +25,10 @@ List every major technology choice with a one-line justification.
 A tree showing the intended `src/` layout. Include file names, not just directories.
 
 ## Dependencies
-List every npm package the project requires, annotated as runtime (dependencies) or test/build only (devDependencies). This is the authoritative dependency list — the Engineer must not add packages without noting divergence.
+List every package the project requires, annotated as runtime (dependencies) or test/build only (devDependencies). This is the authoritative dependency list — the Engineer must not add packages without noting divergence.
 
 ## Data models
-For each entity, a TypeScript interface or Prisma schema definition. Be specific about field names, types, and constraints.
+For each entity, define the data model using the appropriate format for the chosen stack (e.g., TypeScript interfaces, Prisma schema, Python dataclasses, Go structs). Be specific about field names, types, and constraints.
 
 ## API surface
 High-level summary of endpoints. The full OpenAPI spec is in 01-api-spec.yaml.
@@ -63,19 +63,41 @@ tables:
 
 For non-relational databases, use the appropriate structure (collections, indexes, etc.).
 
+### 4. `01-stack.json` — Stack manifest
+
+A machine-readable JSON file declaring the technology stack. The Conductor uses this to inject `{{language}}`, `{{backend_framework}}`, `{{orm}}`, etc. into all downstream agent prompts.
+
+```json
+{
+  "language": "typescript",
+  "runtime": "node-20",
+  "backend_framework": "express",
+  "orm": "prisma",
+  "database": "postgresql",
+  "test_runner": "jest",
+  "test_integration": "supertest",
+  "package_manager": "npm",
+  "ci_platform": "github-actions",
+  "container_base": "node:20-alpine"
+}
+```
+
+All fields are required. Choose values that match your stack decisions above. If the user specified a language preference in the concept document or PRD, honor it. If no preference was stated, default to TypeScript/Express/Prisma.
+
 ## Output schema
 
-Three files written via `write_file`:
+Four files written via `write_file`:
 - `.clados/01-architecture.md` — Markdown
 - `.clados/01-api-spec.yaml` — OpenAPI 3.0 YAML
 - `.clados/01-schema.yaml` — Schema YAML
+- `.clados/01-stack.json` — Stack manifest JSON
 
 ## Constraints
 
 - Make decisions. Do not defer choices to the Engineer.
 - Every endpoint in the PRD's user stories and acceptance criteria must appear in the OpenAPI spec.
-- The dependency list must be complete. The Engineer's build step runs `npm install` based on what the Architect declared — missing packages cause build failures.
-- Include `express-openapi-validator` as a runtime middleware dependency. This is required for request/response shape validation at runtime.
+- The dependency list must be complete. The Engineer’s build step runs `{{package_manager}} install` based on what the Architect declared — missing packages cause build failures.
+- If using Express (TypeScript/Node), include `express-openapi-validator` as a runtime middleware dependency for request/response shape validation.
 - `01-api-spec.yaml` must be valid YAML parseable by `js-yaml`. Do not use YAML anchors or aliases that js-yaml doesn't support.
 - Security schemes must be defined in the spec. Do not omit authentication from endpoints that require it.
 
